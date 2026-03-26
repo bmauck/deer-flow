@@ -99,10 +99,10 @@ class TelegramChannel(Channel):
 
         kwargs: dict[str, Any] = {"chat_id": chat_id, "text": msg.text}
 
-        # Reply to the last bot message in this chat for threading
-        reply_to = self._last_bot_message.get(msg.chat_id)
-        if reply_to:
-            kwargs["reply_to_message_id"] = reply_to
+        # Disabled: reply threading (sends as standalone messages)
+        # reply_to = self._last_bot_message.get(msg.chat_id)
+        # if reply_to:
+        #     kwargs["reply_to_message_id"] = reply_to
 
         bot = self._application.bot
         last_exc: Exception | None = None
@@ -143,14 +143,11 @@ class TelegramChannel(Channel):
             return False
 
         bot = self._application.bot
-        reply_to = self._last_bot_message.get(msg.chat_id)
 
         try:
             if attachment.is_image and attachment.size <= 10 * 1024 * 1024:
                 with open(attachment.actual_path, "rb") as f:
                     kwargs: dict[str, Any] = {"chat_id": chat_id, "photo": f}
-                    if reply_to:
-                        kwargs["reply_to_message_id"] = reply_to
                     sent = await bot.send_photo(**kwargs)
             else:
                 from telegram import InputFile
@@ -158,8 +155,6 @@ class TelegramChannel(Channel):
                 with open(attachment.actual_path, "rb") as f:
                     input_file = InputFile(f, filename=attachment.filename)
                     kwargs = {"chat_id": chat_id, "document": input_file}
-                    if reply_to:
-                        kwargs["reply_to_message_id"] = reply_to
                     sent = await bot.send_document(**kwargs)
 
             self._last_bot_message[msg.chat_id] = sent.message_id
