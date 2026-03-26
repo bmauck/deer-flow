@@ -361,17 +361,19 @@ class SubagentExecutor:
         Returns:
             SubagentResult with the execution result.
         """
-        # Run the async execution in a new event loop
-        # This is necessary because:
-        # 1. We may have async-only tools (like MCP tools)
-        # 2. We're running inside a ThreadPoolExecutor which doesn't have an event loop
-        #
-        # Note: _aexecute() catches all exceptions internally, so this outer
-        # try-except only handles asyncio.run() failures (e.g., if called from
-        # an async context where an event loop already exists). Subagent execution
-        # errors are handled within _aexecute() and returned as FAILED status.
+        # Run the async execution in a dedicated, isolated event loop.
+        # We create the loop explicitly (instead of asyncio.run()) so that
+        # we can guarantee a fresh loop is set for this thread before any
+        # coroutines or httpx/anyio internals create asyncio primitives.
+        # asyncio.run() *should* do this, but shared objects (e.g. httpx
+        # connection pools from MCP tool clients) may cache Event objects
+        # bound to a previous loop, causing "bound to a different event loop"
+        # errors.  Creating + setting the loop explicitly, then closing it,
+        # avoids that class of bug.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            return asyncio.run(self._aexecute(task, result_holder))
+            return loop.run_until_complete(self._aexecute(task, result_holder))
         except Exception as e:
             logger.exception(f"[trace={self.trace_id}] Subagent {self.config.name} execution failed")
             # Create a result with error if we don't have one
@@ -387,6 +389,17 @@ class SubagentExecutor:
             result.error = str(e)
             result.completed_at = datetime.now()
             return result
+        finally:
+            try:
+                # Cancel any lingering tasks so we don't leak coroutines
+                pending = asyncio.all_tasks(loop)
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(None)
 
     def execute_async(self, task: str, task_id: str | None = None) -> str:
         """Start a task execution in the background.

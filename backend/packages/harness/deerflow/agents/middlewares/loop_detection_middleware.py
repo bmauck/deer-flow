@@ -31,6 +31,8 @@ _DEFAULT_WARN_THRESHOLD = 3  # inject warning after 3 identical calls
 _DEFAULT_HARD_LIMIT = 5  # force-stop after 5 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
+_DEFAULT_TOTAL_CALL_WARN = 8  # warn after 8 total model→tool cycles
+_DEFAULT_TOTAL_CALL_LIMIT = 15  # hard stop after 15 total cycles
 
 
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
@@ -99,10 +101,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         self.hard_limit = hard_limit
         self.window_size = window_size
         self.max_tracked_threads = max_tracked_threads
+        self.total_call_warn = _DEFAULT_TOTAL_CALL_WARN
+        self.total_call_limit = _DEFAULT_TOTAL_CALL_LIMIT
         self._lock = threading.Lock()
         # Per-thread tracking using OrderedDict for LRU eviction
         self._history: OrderedDict[str, list[str]] = OrderedDict()
         self._warned: dict[str, set[str]] = defaultdict(set)
+        self._total_calls: dict[str, int] = defaultdict(int)
+        self._total_warned: set[str] = set()
 
     def _get_thread_id(self, runtime: Runtime) -> str:
         """Extract thread_id from runtime context for per-thread tracking."""
@@ -150,13 +156,39 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._history[thread_id] = []
                 self._evict_if_needed()
 
+            # Track total call count regardless of hash
+            self._total_calls[thread_id] = self._total_calls.get(thread_id, 0) + 1
+            total = self._total_calls[thread_id]
+
+            tool_names = [tc.get("name", "?") for tc in tool_calls]
+
+            if total >= self.total_call_limit:
+                logger.error(
+                    "Total tool call limit reached (%d) — forcing stop",
+                    total,
+                    extra={"thread_id": thread_id, "count": total, "tools": tool_names},
+                )
+                return _HARD_STOP_MSG, True
+
+            if total >= self.total_call_warn and thread_id not in self._total_warned:
+                self._total_warned.add(thread_id)
+                logger.warning(
+                    "High tool call count (%d) — injecting wrap-up warning",
+                    total,
+                    extra={"thread_id": thread_id, "count": total, "tools": tool_names},
+                )
+                return (
+                    "[HIGH CALL COUNT] You have made many tool calls. "
+                    "Wrap up now — synthesize what you have and produce your final answer. "
+                    "Do not make more tool calls unless absolutely critical."
+                ), False
+
             history = self._history[thread_id]
             history.append(call_hash)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size:]
 
             count = history.count(call_hash)
-            tool_names = [tc.get("name", "?") for tc in tool_calls]
 
             if count >= self.hard_limit:
                 logger.error(
@@ -227,6 +259,10 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             if thread_id:
                 self._history.pop(thread_id, None)
                 self._warned.pop(thread_id, None)
+                self._total_calls.pop(thread_id, None)
+                self._total_warned.discard(thread_id)
             else:
                 self._history.clear()
                 self._warned.clear()
+                self._total_calls.clear()
+                self._total_warned.clear()

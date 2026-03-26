@@ -10,6 +10,11 @@ from langgraph.graph import END
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+# Maximum number of clarification interrupts allowed per thread run before
+# the middleware stops intercepting and lets the model proceed.  This prevents
+# infinite loops where the model keeps asking the same clarification.
+MAX_CLARIFICATIONS_PER_RUN = 1
+
 
 class ClarificationMiddlewareState(AgentState):
     """Compatible with the `ThreadState` schema."""
@@ -20,14 +25,10 @@ class ClarificationMiddlewareState(AgentState):
 class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
     """Intercepts clarification tool calls and interrupts execution to present questions to the user.
 
-    When the model calls the `ask_clarification` tool, this middleware:
-    1. Intercepts the tool call before execution
-    2. Extracts the clarification question and metadata
-    3. Formats a user-friendly message
-    4. Returns a Command that interrupts execution and presents the question
-    5. Waits for user response before continuing
-
-    This replaces the tool-based approach where clarification continued the conversation flow.
+    Includes a loop guard: if a clarification has already been asked in the
+    current message history (i.e. the model is re-asking after the user already
+    responded), the middleware skips interception and returns a ToolMessage
+    telling the model to proceed without further clarification.
     """
 
     state_schema = ClarificationMiddlewareState
@@ -128,25 +129,42 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
             goto=END,
         )
 
+    def _already_clarified(self, request: ToolCallRequest) -> bool:
+        """Check if clarification has already been asked in this thread's message history.
+
+        Counts existing ask_clarification ToolMessages. If we've already hit the
+        limit, the model is looping — tell it to proceed instead.
+        """
+        messages = getattr(request, "state", {}).get("messages", [])
+        count = sum(
+            1
+            for m in messages
+            if isinstance(m, (dict, ToolMessage))
+            and (m.get("name") if isinstance(m, dict) else getattr(m, "name", None)) == "ask_clarification"
+        )
+        return count >= MAX_CLARIFICATIONS_PER_RUN
+
+    def _skip_clarification(self, request: ToolCallRequest) -> ToolMessage:
+        """Return a ToolMessage that tells the model to stop clarifying and just proceed."""
+        tool_call_id = request.tool_call.get("id", "")
+        print("[ClarificationMiddleware] Loop guard triggered — skipping repeat clarification")
+        return ToolMessage(
+            content="Clarification already asked. Proceed with your best judgment — do not ask again.",
+            tool_call_id=tool_call_id,
+            name="ask_clarification",
+        )
+
     @override
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls and interrupt execution (sync version).
-
-        Args:
-            request: Tool call request
-            handler: Original tool execution handler
-
-        Returns:
-            Command that interrupts execution with the formatted clarification message
-        """
-        # Check if this is an ask_clarification tool call
         if request.tool_call.get("name") != "ask_clarification":
-            # Not a clarification call, execute normally
             return handler(request)
+
+        if self._already_clarified(request):
+            return self._skip_clarification(request)
 
         return self._handle_clarification(request)
 
@@ -156,18 +174,10 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Intercept ask_clarification tool calls and interrupt execution (async version).
-
-        Args:
-            request: Tool call request
-            handler: Original tool execution handler (async)
-
-        Returns:
-            Command that interrupts execution with the formatted clarification message
-        """
-        # Check if this is an ask_clarification tool call
         if request.tool_call.get("name") != "ask_clarification":
-            # Not a clarification call, execute normally
             return await handler(request)
+
+        if self._already_clarified(request):
+            return self._skip_clarification(request)
 
         return self._handle_clarification(request)

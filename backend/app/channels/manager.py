@@ -17,12 +17,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_GATEWAY_URL = "http://localhost:8001"
 DEFAULT_ASSISTANT_ID = "lead_agent"
+# Maximum time (seconds) to wait for a single LangGraph run before giving up.
+RUN_TIMEOUT_SECONDS = 600
 
 DEFAULT_RUN_CONFIG: dict[str, Any] = {"recursion_limit": 100}
 DEFAULT_RUN_CONTEXT: dict[str, Any] = {
     "thinking_enabled": True,
     "is_plan_mode": False,
-    "subagent_enabled": False,
+    "subagent_enabled": True,
 }
 STREAM_UPDATE_MIN_INTERVAL_SECONDS = 0.35
 
@@ -76,9 +78,10 @@ def _extract_response_text(result: dict | list) -> str:
             break
 
         # Check for tool messages from ask_clarification (interrupt case)
+        # Skip loop-guard responses — those are internal and not meant for the user.
         if msg_type == "tool" and msg.get("name") == "ask_clarification":
             content = msg.get("content", "")
-            if isinstance(content, str) and content:
+            if isinstance(content, str) and content and "Proceed with your best judgment" not in content:
                 return content
 
         # Regular AI message with text content
@@ -505,13 +508,28 @@ class ChannelManager:
             return
 
         logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
-        result = await client.runs.wait(
-            thread_id,
-            assistant_id,
-            input={"messages": [{"role": "human", "content": msg.text}]},
-            config=run_config,
-            context=run_context,
-        )
+        try:
+            result = await asyncio.wait_for(
+                client.runs.wait(
+                    thread_id,
+                    assistant_id,
+                    input={"messages": [{"role": "human", "content": msg.text}]},
+                    config=run_config,
+                    context=run_context,
+                    multitask_strategy="interrupt",
+                ),
+                timeout=RUN_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error("[Manager] runs.wait timed out after %ds for thread_id=%s", RUN_TIMEOUT_SECONDS, thread_id)
+            await self._cancel_active_runs(client, thread_id)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel_name=msg.channel_name,
+                chat_id=msg.chat_id,
+                thread_id=thread_id,
+                text="⏱ Request timed out after %d seconds. Please try again." % RUN_TIMEOUT_SECONDS,
+            ))
+            return
 
         response_text = _extract_response_text(result)
         artifacts = _extract_artifacts(result)
@@ -570,6 +588,7 @@ class ChannelManager:
                 config=run_config,
                 context=run_context,
                 stream_mode=["messages-tuple", "values"],
+                multitask_strategy="interrupt",
             ):
                 event = getattr(chunk, "event", "")
                 data = getattr(chunk, "data", None)
@@ -675,11 +694,20 @@ class ChannelManager:
             reply = await self._fetch_gateway("/api/models", "models")
         elif command == "memory":
             reply = await self._fetch_gateway("/api/memory", "memory")
+        elif command == "cancel":
+            thread_id = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
+            if not thread_id:
+                reply = "No active conversation to cancel."
+            else:
+                client = self._get_client()
+                cancelled = await self._cancel_active_runs(client, thread_id)
+                reply = f"Cancelled {cancelled} run(s)." if cancelled else "No active runs to cancel."
         elif command == "help":
             reply = (
                 "Available commands:\n"
                 "/bootstrap — Start a bootstrap session (enables agent setup)\n"
                 "/new — Start a new conversation\n"
+                "/cancel — Cancel all active runs on current thread\n"
                 "/status — Show current thread info\n"
                 "/models — List available models\n"
                 "/memory — Show memory status\n"
@@ -719,6 +747,22 @@ class ChannelManager:
         return str(data)
 
     # -- error helper ------------------------------------------------------
+
+    async def _cancel_active_runs(self, client, thread_id: str) -> int:
+        """Best-effort cancel of any active runs on the given thread. Returns count cancelled."""
+        cancelled = 0
+        try:
+            for status in ("running", "pending"):
+                runs = await client.runs.list(thread_id, status=status)
+                for run in runs:
+                    run_id = run.get("run_id") or run.get("id")
+                    if run_id:
+                        logger.info("[Manager] cancelling %s run %s on thread %s", status, run_id, thread_id)
+                        await client.runs.cancel(thread_id, run_id)
+                        cancelled += 1
+        except Exception:
+            logger.warning("[Manager] failed to cancel runs on thread %s", thread_id, exc_info=True)
+        return cancelled
 
     async def _send_error(self, msg: InboundMessage, error_text: str) -> None:
         outbound = OutboundMessage(
