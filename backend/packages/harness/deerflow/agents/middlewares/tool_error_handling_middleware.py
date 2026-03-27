@@ -85,10 +85,9 @@ def _build_runtime_middlewares(
 
         middlewares.insert(1, UploadsMiddleware())
 
-    if include_dangling_tool_call_patch:
-        from deerflow.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
-
-        middlewares.append(DanglingToolCallMiddleware())
+    # NOTE: DanglingToolCallMiddleware is added in _build_middlewares() in
+    # lead_agent/agent.py AFTER SummarizationMiddleware, because summarization
+    # can trim messages and leave dangling tool_use blocks without tool_results.
 
     # Guardrail middleware (if configured)
     from deerflow.config.guardrails_config import get_guardrails_config

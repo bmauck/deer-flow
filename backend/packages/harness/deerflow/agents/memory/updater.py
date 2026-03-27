@@ -315,9 +315,25 @@ class MemoryUpdater:
                 conversation=conversation_text,
             )
 
-            # Call LLM
+            # Call LLM with retry on rate-limit errors
+            import time as _time
+
             model = self._get_model()
-            response = model.invoke(prompt)
+            response = None
+            for _attempt in range(3):
+                try:
+                    response = model.invoke(prompt)
+                    break
+                except Exception as rate_exc:
+                    if "429" in str(rate_exc) or "rate_limit" in str(rate_exc).lower():
+                        wait = 2 ** (_attempt + 1)
+                        logger.warning("Rate limited on memory update, retrying in %ds (attempt %d/3)", wait, _attempt + 1)
+                        _time.sleep(wait)
+                    else:
+                        raise
+            if response is None:
+                logger.error("Memory update failed after 3 rate-limit retries")
+                return False
             response_text = _extract_text(response.content).strip()
 
             # Parse response

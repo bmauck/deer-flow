@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
 import threading
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from app.channels.base import Channel
@@ -68,6 +72,9 @@ class TelegramChannel(Channel):
 
         # General message handler
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
+        
+        # Photo and document handler
+        app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, self._on_media))
 
         self._application = app
 
@@ -266,6 +273,104 @@ class TelegramChannel(Channel):
             fut.add_done_callback(lambda f: self._log_future_error(f, "process_incoming_with_reply", update.message.message_id))
         else:
             logger.warning("[Telegram] Main loop not running. Cannot publish inbound message.")
+
+    async def _on_media(self, update, context) -> None:
+        """Handle photo and document messages.
+
+        Downloads the file from Telegram, saves to a temp path, and forwards
+        the message with file metadata so the manager can place it in the
+        thread's uploads directory before the agent run starts.
+        """
+        if not self._check_user(update.effective_user.id):
+            return
+
+        caption = (update.message.caption or "").strip()
+        bot = self._application.bot
+        files_list: list[dict[str, Any]] = []
+
+        try:
+            if update.message.photo:
+                # Highest resolution photo
+                photo = update.message.photo[-1]
+                file_id = photo.file_id
+                file_size = photo.file_size or 0
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"photo_{timestamp}.jpg"
+                mime_type = "image/jpeg"
+            elif update.message.document:
+                doc = update.message.document
+                file_id = doc.file_id
+                file_size = doc.file_size or 0
+                filename = doc.file_name or f"document_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                mime_type = doc.mime_type or "application/octet-stream"
+            else:
+                return
+
+            # Telegram Bot API limits file downloads to 20MB
+            if file_size > 20 * 1024 * 1024:
+                logger.warning("[Telegram] file too large for download (%d bytes) from chat=%s", file_size, update.effective_chat.id)
+                await update.message.reply_text("Sorry, that file is too large (>20MB). Please send a smaller file.")
+                return
+
+            # Download to temp file
+            tg_file = await bot.get_file(file_id)
+            suffix = Path(filename).suffix or ".bin"
+            fd, temp_path = tempfile.mkstemp(suffix=suffix)
+            os.close(fd)
+
+            await tg_file.download_to_drive(custom_path=temp_path)
+            actual_size = Path(temp_path).stat().st_size
+
+            files_list.append({
+                "filename": filename,
+                "temp_path": temp_path,
+                "size": actual_size,
+                "mime_type": mime_type,
+            })
+            logger.info("[Telegram] downloaded %s (%d bytes) from chat=%s", filename, actual_size, update.effective_chat.id)
+
+        except Exception:
+            logger.exception("[Telegram] failed to download media from chat=%s", update.effective_chat.id)
+            # Clean up any temp files on failure
+            for f in files_list:
+                Path(f.get("temp_path", "")).unlink(missing_ok=True)
+            await update.message.reply_text("Sorry, I couldn't download that file. Please try again.")
+            return
+
+        # Default text when no caption
+        text = caption or "I've sent you an image. Please analyze it and tell me what you see."
+
+        chat_id = str(update.effective_chat.id)
+        user_id = str(update.effective_user.id)
+        msg_id = str(update.message.message_id)
+
+        if update.effective_chat.type == "private":
+            topic_id = None
+        else:
+            reply_to = update.message.reply_to_message
+            topic_id = str(reply_to.message_id) if reply_to else msg_id
+
+        inbound = self._make_inbound(
+            chat_id=chat_id,
+            user_id=user_id,
+            text=text,
+            msg_type=InboundMessageType.CHAT,
+            thread_ts=msg_id,
+            files=files_list,
+        )
+        inbound.topic_id = topic_id
+
+        if self._main_loop and self._main_loop.is_running():
+            fut = asyncio.run_coroutine_threadsafe(
+                self._process_incoming_with_reply(chat_id, update.message.message_id, inbound),
+                self._main_loop,
+            )
+            fut.add_done_callback(lambda f: self._log_future_error(f, "process_incoming_with_reply", update.message.message_id))
+        else:
+            logger.warning("[Telegram] Main loop not running. Cannot publish inbound message.")
+            # Clean up temp files if we can't process
+            for f in files_list:
+                Path(f.get("temp_path", "")).unlink(missing_ok=True)
 
     async def _on_text(self, update, context) -> None:
         """Handle regular text messages."""

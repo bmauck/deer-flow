@@ -120,9 +120,11 @@ class MemoryUpdateQueue:
                 except Exception as e:
                     print(f"Error updating memory for thread {context.thread_id}: {e}")
 
-                # Small delay between updates to avoid rate limiting
+                # Delay between updates to stay within API rate limits.
+                # Claude Haiku has a 50k tokens/min org limit; each memory
+                # update can send 15-25k tokens, so we need ≥5s between calls.
                 if len(contexts_to_process) > 1:
-                    time.sleep(0.5)
+                    time.sleep(5)
 
         finally:
             with self._lock:

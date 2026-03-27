@@ -222,6 +222,13 @@ def _build_middlewares(config: RunnableConfig, model_name: str | None, agent_nam
     if summarization_middleware is not None:
         middlewares.append(summarization_middleware)
 
+    # DanglingToolCallMiddleware MUST run after SummarizationMiddleware because
+    # summarization can trim messages and leave tool_use blocks without their
+    # corresponding tool_result, which causes Anthropic API 400 errors.
+    from deerflow.agents.middlewares.dangling_tool_call_middleware import DanglingToolCallMiddleware
+
+    middlewares.append(DanglingToolCallMiddleware())
+
     # Add TodoList middleware if plan mode is enabled
     is_plan_mode = config.get("configurable", {}).get("is_plan_mode", False)
     todo_list_middleware = _create_todo_list_middleware(is_plan_mode)

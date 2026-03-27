@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import shutil
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
@@ -455,13 +457,27 @@ class ChannelManager:
                     await self._handle_command(msg)
                 else:
                     await self._handle_chat(msg)
-            except Exception:
-                logger.exception(
-                    "Error handling message from %s (chat=%s)",
-                    msg.channel_name,
-                    msg.chat_id,
-                )
-                await self._send_error(msg, "An internal error occurred. Please try again.")
+            except Exception as exc:
+                exc_str = str(exc)
+                if "GraphRecursionError" in exc_str or "Recursion limit" in exc_str:
+                    logger.error(
+                        "Agent hit recursion limit for %s (chat=%s): %s",
+                        msg.channel_name,
+                        msg.chat_id,
+                        exc_str,
+                    )
+                    await self._send_error(
+                        msg,
+                        "The agent ran out of steps while working on your request. "
+                        "Try breaking your request into smaller parts, or start a new conversation with /new.",
+                    )
+                else:
+                    logger.exception(
+                        "Error handling message from %s (chat=%s)",
+                        msg.channel_name,
+                        msg.chat_id,
+                    )
+                    await self._send_error(msg, "An internal error occurred. Please try again.")
 
     # -- chat handling -----------------------------------------------------
 
@@ -479,6 +495,46 @@ class ChannelManager:
         logger.info("[Manager] new thread created on LangGraph Server: thread_id=%s for chat_id=%s topic_id=%s", thread_id, msg.chat_id, msg.topic_id)
         return thread_id
 
+    @staticmethod
+    def _place_uploaded_files(thread_id: str, files: list[dict]) -> list[dict]:
+        """Move temp files into the thread's uploads directory.
+
+        Must be called BEFORE the LangGraph run starts so that
+        UploadsMiddleware can discover the files via directory scan.
+
+        Returns agent-friendly metadata for each placed file.
+        """
+        from deerflow.uploads.manager import ensure_uploads_dir, normalize_filename, claim_unique_filename
+
+        if not files:
+            return []
+
+        uploads_dir = ensure_uploads_dir(thread_id)
+        placed: list[dict] = []
+        seen: set[str] = set()
+
+        for file_info in files:
+            temp_path = file_info.get("temp_path")
+            if not temp_path or not Path(temp_path).is_file():
+                continue
+            try:
+                filename = normalize_filename(file_info.get("filename", "upload"))
+                filename = claim_unique_filename(filename, seen)
+                dest = uploads_dir / filename
+                shutil.move(temp_path, dest)
+                placed.append({
+                    "filename": filename,
+                    "size": dest.stat().st_size,
+                    "path": f"/mnt/user-data/uploads/{filename}",
+                    "status": "uploaded",
+                })
+                logger.info("[Manager] placed uploaded file: %s → %s", filename, dest)
+            except Exception:
+                logger.exception("[Manager] failed to place file %s", file_info.get("filename"))
+                Path(temp_path).unlink(missing_ok=True)
+
+        return placed
+
     async def _handle_chat(self, msg: InboundMessage, extra_context: dict[str, Any] | None = None) -> None:
         client = self._get_client()
 
@@ -492,6 +548,11 @@ class ChannelManager:
         # No existing thread found — create a new one
         if thread_id is None:
             thread_id = await self._create_thread(client, msg)
+
+        # Place any uploaded files (from Telegram photos/documents) into the
+        # thread's uploads directory BEFORE the agent run starts.
+        if msg.files:
+            self._place_uploaded_files(thread_id, msg.files)
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
         if extra_context:

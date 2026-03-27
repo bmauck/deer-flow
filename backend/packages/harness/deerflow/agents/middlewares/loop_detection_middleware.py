@@ -31,8 +31,8 @@ _DEFAULT_WARN_THRESHOLD = 3  # inject warning after 3 identical calls
 _DEFAULT_HARD_LIMIT = 5  # force-stop after 5 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
-_DEFAULT_TOTAL_CALL_WARN = 8  # warn after 8 total model→tool cycles
-_DEFAULT_TOTAL_CALL_LIMIT = 15  # hard stop after 15 total cycles
+_DEFAULT_TOTAL_CALL_WARN = 35  # warn after 35 total model→tool rounds
+_DEFAULT_TOTAL_CALL_LIMIT = 45  # hard stop after 45 total rounds (~90 steps, before recursion_limit=100)
 
 
 def _hash_tool_calls(tool_calls: list[dict]) -> str:
@@ -74,6 +74,17 @@ _HARD_STOP_MSG = (
     "Producing final answer with results collected so far."
 )
 
+_BUDGET_WARNING_MSG = (
+    "[BUDGET WARNING] You have used most of your tool-call budget for this turn. "
+    "Wrap up now: summarize what you have so far and produce your final answer. "
+    "Do not start new searches or tool calls unless absolutely necessary."
+)
+
+_BUDGET_STOP_MSG = (
+    "[BUDGET EXCEEDED] Tool-call budget exhausted. "
+    "Producing final answer with results collected so far."
+)
+
 
 class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
     """Detects and breaks repetitive tool call loops.
@@ -107,7 +118,6 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         # Per-thread tracking using OrderedDict for LRU eviction
         self._history: OrderedDict[str, list[str]] = OrderedDict()
         self._warned: dict[str, set[str]] = defaultdict(set)
-        self._total_calls: dict[str, int] = defaultdict(int)
         self._total_warned: set[str] = set()
 
     def _get_thread_id(self, runtime: Runtime) -> str:
@@ -128,7 +138,14 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             logger.debug("Evicted loop tracking for thread %s (LRU)", evicted_id)
 
     def _track_and_check(self, state: AgentState, runtime: Runtime) -> tuple[str | None, bool]:
-        """Track tool calls and check for loops.
+        """Track tool calls and check for repetitive loops.
+
+        Two detection layers:
+          1. **Identical-call detection**: catches the agent calling the same tool
+             with the same args repeatedly (warn at warn_threshold, stop at hard_limit).
+          2. **Total-round budget**: counts all tool-call rounds (regardless of
+             uniqueness) and forces a graceful stop before the LangGraph
+             recursion_limit kills the run with no output.
 
         Returns:
             (warning_message_or_none, should_hard_stop)
@@ -147,6 +164,7 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
 
         thread_id = self._get_thread_id(runtime)
         call_hash = _hash_tool_calls(tool_calls)
+        tool_names = [tc.get("name", "?") for tc in tool_calls]
 
         with self._lock:
             # Touch / create entry (move to end for LRU)
@@ -156,43 +174,18 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 self._history[thread_id] = []
                 self._evict_if_needed()
 
-            # Track total call count regardless of hash
-            self._total_calls[thread_id] = self._total_calls.get(thread_id, 0) + 1
-            total = self._total_calls[thread_id]
-
-            tool_names = [tc.get("name", "?") for tc in tool_calls]
-
-            if total >= self.total_call_limit:
-                logger.error(
-                    "Total tool call limit reached (%d) — forcing stop",
-                    total,
-                    extra={"thread_id": thread_id, "count": total, "tools": tool_names},
-                )
-                return _HARD_STOP_MSG, True
-
-            if total >= self.total_call_warn and thread_id not in self._total_warned:
-                self._total_warned.add(thread_id)
-                logger.warning(
-                    "High tool call count (%d) — injecting wrap-up warning",
-                    total,
-                    extra={"thread_id": thread_id, "count": total, "tools": tool_names},
-                )
-                return (
-                    "[HIGH CALL COUNT] You have made many tool calls. "
-                    "Wrap up now — synthesize what you have and produce your final answer. "
-                    "Do not make more tool calls unless absolutely critical."
-                ), False
-
             history = self._history[thread_id]
             history.append(call_hash)
             if len(history) > self.window_size:
                 history[:] = history[-self.window_size:]
 
+            # --- Identical-call detection ---
             count = history.count(call_hash)
 
             if count >= self.hard_limit:
                 logger.error(
-                    "Loop hard limit reached — forcing stop",
+                    "Loop hard limit reached — forcing stop (same call %d times)",
+                    count,
                     extra={
                         "thread_id": thread_id,
                         "call_hash": call_hash,
@@ -207,7 +200,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                 if call_hash not in warned:
                     warned.add(call_hash)
                     logger.warning(
-                        "Repetitive tool calls detected — injecting warning",
+                        "Repetitive tool calls detected (%d repeats) — logging only",
+                        count,
                         extra={
                             "thread_id": thread_id,
                             "call_hash": call_hash,
@@ -215,9 +209,41 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
                             "tools": tool_names,
                         },
                     )
-                    return _WARNING_MSG, False
-                # Warning already injected for this hash — suppress
-                return None, False
+
+            # --- Total-round budget (per-turn, stateless) ---
+            # Count AI messages with tool_calls after the last HumanMessage.
+            # This resets naturally each turn without needing external state.
+            total = 0
+            for msg in reversed(messages[:-1]):  # exclude current (already counted above)
+                if getattr(msg, "type", None) == "human":
+                    break
+                if getattr(msg, "type", None) == "ai" and getattr(msg, "tool_calls", None):
+                    total += 1
+            total += 1  # count current round
+
+            # Reset warning flag at the start of a new turn so it can fire again
+            if total == 1:
+                self._total_warned.discard(thread_id)
+
+            if total >= self.total_call_limit:
+                logger.error(
+                    "Total tool-call rounds (%d) hit budget limit — forcing stop",
+                    total,
+                    extra={"thread_id": thread_id, "tools": tool_names},
+                )
+                return _BUDGET_STOP_MSG, True
+
+            if total >= self.total_call_warn:
+                # Only warn once per turn: check if we already warned in a previous round
+                if thread_id not in self._total_warned:
+                    self._total_warned.add(thread_id)
+                    logger.warning(
+                        "Approaching tool-call budget (%d/%d rounds used)",
+                        total,
+                        self.total_call_limit,
+                        extra={"thread_id": thread_id, "tools": tool_names},
+                    )
+                    return _BUDGET_WARNING_MSG, False
 
         return None, False
 
@@ -225,23 +251,29 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
         warning, hard_stop = self._track_and_check(state, runtime)
 
         if hard_stop:
-            # Strip tool_calls from the last AIMessage to force text output
+            # Strip tool_calls from the last AIMessage to force text output.
+            # The warning message (loop or budget) is appended to the content
+            # so the model sees it and produces a final answer.
             messages = state.get("messages", [])
             last_msg = messages[-1]
+            existing = last_msg.content or ""
+            stop_msg = warning  # warning contains the actual stop message text
+            if isinstance(existing, list):
+                updated_content = existing + [{"type": "text", "text": f"\n\n{stop_msg}"}]
+            else:
+                updated_content = existing + f"\n\n{stop_msg}"
             stripped_msg = last_msg.model_copy(update={
                 "tool_calls": [],
-                "content": (last_msg.content or "") + f"\n\n{_HARD_STOP_MSG}",
+                "content": updated_content,
             })
             return {"messages": [stripped_msg]}
 
-        if warning:
-            # Inject as HumanMessage instead of SystemMessage to avoid
-            # Anthropic's "multiple non-consecutive system messages" error.
-            # Anthropic models require system messages only at the start of
-            # the conversation; injecting one mid-conversation crashes
-            # langchain_anthropic's _format_messages(). HumanMessage works
-            # with all providers. See #1299.
-            return {"messages": [HumanMessage(content=warning)]}
+        # Warning-only case: do NOT modify messages. Injecting a
+        # HumanMessage or patching the AI message's content both break
+        # Anthropic's requirement that tool_result blocks appear
+        # immediately after tool_use blocks. The warning is already
+        # logged above; the hard_stop at total_call_limit will enforce
+        # termination if the agent keeps going.
 
         return None
 
@@ -259,10 +291,8 @@ class LoopDetectionMiddleware(AgentMiddleware[AgentState]):
             if thread_id:
                 self._history.pop(thread_id, None)
                 self._warned.pop(thread_id, None)
-                self._total_calls.pop(thread_id, None)
                 self._total_warned.discard(thread_id)
             else:
                 self._history.clear()
                 self._warned.clear()
-                self._total_calls.clear()
                 self._total_warned.clear()

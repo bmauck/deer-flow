@@ -31,6 +31,11 @@ def get_subagent_config(name: str) -> SubagentConfig | None:
         logger.debug(f"Subagent '{name}': timeout overridden by config.yaml ({config.timeout_seconds}s -> {effective_timeout}s)")
         config = replace(config, timeout_seconds=effective_timeout)
 
+    effective_model = app_config.get_model_for(name)
+    if effective_model is not None and effective_model != config.model:
+        logger.debug(f"Subagent '{name}': model overridden by config.yaml ({config.model} -> {effective_model})")
+        config = replace(config, model=effective_model)
+
     return config
 
 
