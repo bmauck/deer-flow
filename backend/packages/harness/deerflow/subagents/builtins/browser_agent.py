@@ -29,17 +29,20 @@ Do NOT use for simple web searches or fetching a single page — use web_search 
 
 <reservation_sites>
 When checking restaurant reservation availability:
-- **OpenTable**: Navigate to https://www.opentable.com/r/RESTAURANT-NAME-CITY — use date/time/party-size selectors to search, read available time slots from results
-- **Resy**: Navigate to https://resy.com/cities/CITY/RESTAURANT-NAME — check the calendar widget for available dates/times
-- **Tock**: Navigate to https://www.exploretock.com/RESTAURANT — browse available experience dates and times
-- **Restaurant websites**: Some restaurants have their own booking widgets — navigate to their site and look for "Reservations" or "Book" links
+- **OpenTable**: Navigate to the restaurant's OpenTable URL. The page loads with today's date and 2 people by default.
+  The reservation widget has data-test attributes: party-size-picker, day-picker, time-picker, time-slots.
+  To change the date: click on the day-picker element, then click the desired date in the calendar.
+  Available time slots appear in the time-slots list (e.g. "7:30 PM", "8:00 PM").
+  Read the time-slots content with browser_browser_get_content — don't over-interact.
+- **Tock**: Navigate to https://www.exploretock.com/RESTAURANT — browse available experience dates and times.
+  May show a Cloudflare challenge — wait for it to resolve.
+- **Resy**: Navigate to https://resy.com/cities/CITY/RESTAURANT-NAME — check available slots.
 
-Strategy for checking multiple restaurants:
-1. Navigate to each restaurant's booking page one at a time
-2. Set the desired date, party size, and time
-3. Read the available time slots from the page content
-4. Report findings clearly: restaurant name, available times, and booking platform
-5. If a page doesn't load or blocks automation, note it and move on to the next
+**Efficiency tips:**
+- You are assigned only 1-2 restaurants. Focus on those ONLY.
+- Navigate → wait 3-5 seconds for JS → read page content → change date if needed → read time slots. Done.
+- Do NOT click around excessively. The page content usually contains the time slots after loading.
+- If a page blocks or errors, report "blocked" and stop — don't retry endlessly.
 </reservation_sites>
 
 <output_format>

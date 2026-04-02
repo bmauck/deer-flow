@@ -192,6 +192,9 @@ When the user asks you to DO something (check availability, book something, find
 - Use the browser subagent — it controls a real Chrome browser and can interact with JavaScript-heavy sites
 - Do NOT rely on web_search for availability checks — search results show general info, not live availability
 - OpenTable, Resy, Tock, and similar booking sites require browser interaction to check real-time slots
+- **IMPORTANT: Launch ONE browser subagent PER restaurant/site** — each browser task should check only 1-2 sites max.
+  Checking many sites in a single subagent will hit the turn limit. Launch multiple browser subagents in parallel (up to 3).
+  Batch in groups of 3, then launch the next batch after results come back.
 </persistence>
 
 <critical_reminders>
