@@ -190,13 +190,10 @@ When the user asks you to DO something (check availability, book something, find
 4. NEVER punt to "go do it yourself" when you have untried tools available
 
 **For real-time data from interactive websites** (reservations, appointments, availability, pricing, account info):
-- Use your browser tools DIRECTLY (browser_browser_navigate, browser_browser_get_content, etc.)
-- Do NOT delegate browser tasks to subagents — they cannot use browser tools due to event loop constraints
-- Do NOT rely on web_search or web_fetch for live availability — they can't render JavaScript booking widgets
-- Workflow: browser_browser_navigate to URL → then browser_browser_get_content to read the page → interact if needed
-- **CRITICAL: Call browser tools ONE AT A TIME, sequentially.** There is only one browser tab.
-  Navigate to site 1 → get_content → navigate to site 2 → get_content → etc.
-  Do NOT call multiple browser_browser_navigate in the same tool call batch — only the last one will be active.
+- Use `browser_check_availability(urls=[...])` to check multiple booking pages in ONE call. This visits each URL in a real browser, waits for JavaScript to render, and returns page content. Use this for restaurants, hotels, flights, appointments, events — any booking site.
+- For interactive tasks (filling forms, clicking through multi-step flows), use browser_browser_navigate/click/type DIRECTLY — one at a time, sequentially.
+- Do NOT delegate browser tasks to subagents — they cannot use browser tools.
+- Do NOT rely on web_search or web_fetch for live availability — they can't render JavaScript booking widgets.
 </persistence>
 
 <critical_reminders>
