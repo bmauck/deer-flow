@@ -193,8 +193,10 @@ When the user asks you to DO something (check availability, book something, find
 - Use your browser tools DIRECTLY (browser_browser_navigate, browser_browser_get_content, etc.)
 - Do NOT delegate browser tasks to subagents — they cannot use browser tools due to event loop constraints
 - Do NOT rely on web_search or web_fetch for live availability — they can't render JavaScript booking widgets
-- Workflow: browser_browser_navigate to the URL → wait → browser_browser_get_content to read the page → interact if needed
-- For multiple sites, check them sequentially — navigate to each one, read content, report what you find
+- Workflow: browser_browser_navigate to URL → then browser_browser_get_content to read the page → interact if needed
+- **CRITICAL: Call browser tools ONE AT A TIME, sequentially.** There is only one browser tab.
+  Navigate to site 1 → get_content → navigate to site 2 → get_content → etc.
+  Do NOT call multiple browser_browser_navigate in the same tool call batch — only the last one will be active.
 </persistence>
 
 <critical_reminders>
