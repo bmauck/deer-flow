@@ -70,6 +70,6 @@ Report results concisely:
     ],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="claude-haiku",
-    max_turns=80,
-    timeout_seconds=600,
+    max_turns=30,
+    timeout_seconds=120,
 )
