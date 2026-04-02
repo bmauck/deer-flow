@@ -23,7 +23,7 @@ def task_tool(
     runtime: ToolRuntime[ContextT, ThreadState],
     description: str,
     prompt: str,
-    subagent_type: Literal["general-purpose", "bash"],
+    subagent_type: Literal["general-purpose", "bash", "browser"],
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
 ) -> str:
@@ -40,12 +40,16 @@ def task_tool(
       multiple dependent steps, or would benefit from isolated context.
     - **bash**: Command execution specialist for running bash commands. Use for
       git operations, build processes, or when command output would be verbose.
+    - **browser**: Browser automation specialist for interacting with live websites.
+      Use for checking real-time availability (reservations, appointments), filling
+      forms, or navigating JavaScript-heavy pages that web_fetch cannot render.
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools
     - Tasks that produce verbose output
     - When you want to isolate context from the main conversation
     - Parallel research or exploration tasks
+    - Checking live website data (reservations, availability, pricing)
 
     When NOT to use this tool:
     - Simple, single-step operations (use tools directly)
@@ -60,7 +64,7 @@ def task_tool(
     # Get subagent configuration
     config = get_subagent_config(subagent_type)
     if config is None:
-        return f"Error: Unknown subagent type '{subagent_type}'. Available: general-purpose, bash"
+        return f"Error: Unknown subagent type '{subagent_type}'. Available: general-purpose, bash, browser"
 
     # Build config overrides
     overrides: dict = {}
