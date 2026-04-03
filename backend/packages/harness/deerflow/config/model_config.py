@@ -35,3 +35,7 @@ class ModelConfig(BaseModel):
             "This is a shortcut for `when_thinking_enabled` and will be merged with `when_thinking_enabled` if both are provided."
         ),
     )
+    fallback_to: str | None = Field(
+        default_factory=lambda: None,
+        description="Model name to fall back to when this model is unavailable (circuit breaker).",
+    )

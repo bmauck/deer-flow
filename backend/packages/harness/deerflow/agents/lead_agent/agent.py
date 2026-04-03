@@ -57,12 +57,8 @@ def _create_summarization_middleware() -> SummarizationMiddleware | None:
     keep = config.keep.to_tuple()
 
     # Prepare model parameter
-    if config.model_name:
-        model = config.model_name
-    else:
-        # Use a lightweight model for summarization to save costs
-        # Falls back to default model if not explicitly specified
-        model = create_chat_model(thinking_enabled=False)
+    # Use DeerFlow's model factory so Ollama models resolve correctly
+    model = create_chat_model(name=config.model_name, thinking_enabled=False)
 
     # Prepare kwargs
     kwargs = {

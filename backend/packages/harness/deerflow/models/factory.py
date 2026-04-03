@@ -8,11 +8,13 @@ from deerflow.reflection import resolve_class
 logger = logging.getLogger(__name__)
 
 
-def create_chat_model(name: str | None = None, thinking_enabled: bool = False, **kwargs) -> BaseChatModel:
+def create_chat_model(name: str | None = None, thinking_enabled: bool = False, _fallback_depth: int = 0, **kwargs) -> BaseChatModel:
     """Create a chat model instance from the config.
 
     Args:
         name: The name of the model to create. If None, the first model in the config will be used.
+        thinking_enabled: Whether to enable thinking mode.
+        _fallback_depth: Internal counter to prevent infinite fallback loops.
 
     Returns:
         A chat model instance.
@@ -23,6 +25,21 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
     model_config = config.get_model_config(name)
     if model_config is None:
         raise ValueError(f"Model {name} not found in config") from None
+
+    # Circuit breaker: check health and fall back if needed
+    fallback_to = model_config.fallback_to
+    if fallback_to and _fallback_depth < 3:
+        from deerflow.models.circuit_breaker import check_model_health, get_circuit_breaker_registry
+
+        registry = get_circuit_breaker_registry()
+        if registry.should_use_fallback(name):
+            logger.warning("Circuit breaker OPEN for '%s', falling back to '%s'", name, fallback_to)
+            return create_chat_model(name=fallback_to, thinking_enabled=thinking_enabled, _fallback_depth=_fallback_depth + 1, **kwargs)
+
+        if not check_model_health(model_config):
+            logger.warning("Health check failed for '%s', falling back to '%s'", name, fallback_to)
+            return create_chat_model(name=fallback_to, thinking_enabled=thinking_enabled, _fallback_depth=_fallback_depth + 1, **kwargs)
+
     model_class = resolve_class(model_config.use, BaseChatModel)
     model_settings_from_config = model_config.model_dump(
         exclude_none=True,
@@ -36,6 +53,7 @@ def create_chat_model(name: str | None = None, thinking_enabled: bool = False, *
             "when_thinking_enabled",
             "thinking",
             "supports_vision",
+            "fallback_to",
         },
     )
     # Compute effective when_thinking_enabled by merging in the `thinking` shortcut field.

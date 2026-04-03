@@ -31,8 +31,8 @@ _DEFAULT_WARN_THRESHOLD = 3  # inject warning after 3 identical calls
 _DEFAULT_HARD_LIMIT = 5  # force-stop after 5 identical calls
 _DEFAULT_WINDOW_SIZE = 20  # track last N tool calls
 _DEFAULT_MAX_TRACKED_THREADS = 100  # LRU eviction limit
-_DEFAULT_TOTAL_CALL_WARN = 35  # warn after 35 total model→tool rounds
-_DEFAULT_TOTAL_CALL_LIMIT = 45  # hard stop after 45 total rounds (~90 steps, before recursion_limit=100)
+_DEFAULT_TOTAL_CALL_WARN = 70  # warn after 70 total model→tool rounds
+_DEFAULT_TOTAL_CALL_LIMIT = 90  # hard stop after 90 total rounds (~180 steps, before recursion_limit=200)
 
 
 def _hash_tool_calls(tool_calls: list[dict]) -> str:

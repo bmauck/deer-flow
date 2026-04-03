@@ -57,7 +57,8 @@ class MemoryConfigResponse(BaseModel):
     """Response model for memory configuration."""
 
     enabled: bool = Field(..., description="Whether memory is enabled")
-    storage_path: str = Field(..., description="Path to memory storage file")
+    type: str = Field(default="json", description="Storage backend type (json or postgres)")
+    storage_path: str = Field(..., description="Path to memory storage file (json backend)")
     debounce_seconds: int = Field(..., description="Debounce time for memory updates")
     max_facts: int = Field(..., description="Maximum number of facts to store")
     fact_confidence_threshold: float = Field(..., description="Minimum confidence threshold for facts")
@@ -163,6 +164,7 @@ async def get_memory_config_endpoint() -> MemoryConfigResponse:
     config = get_memory_config()
     return MemoryConfigResponse(
         enabled=config.enabled,
+        type=config.type,
         storage_path=config.storage_path,
         debounce_seconds=config.debounce_seconds,
         max_facts=config.max_facts,

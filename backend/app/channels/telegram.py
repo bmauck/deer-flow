@@ -346,6 +346,9 @@ class TelegramChannel(Channel):
 
         if update.effective_chat.type == "private":
             topic_id = None
+            quoted = self._extract_reply_context(update)
+            if quoted:
+                text = f'[Replying to message: "{quoted}"]\n\n{text}'
         else:
             reply_to = update.message.reply_to_message
             topic_id = str(reply_to.message_id) if reply_to else msg_id
@@ -372,6 +375,21 @@ class TelegramChannel(Channel):
             for f in files_list:
                 Path(f.get("temp_path", "")).unlink(missing_ok=True)
 
+    @staticmethod
+    def _extract_reply_context(update) -> str | None:
+        """Extract quoted text from a reply_to_message, if present."""
+        reply_to = update.message.reply_to_message
+        if not reply_to:
+            return None
+        quoted = reply_to.text or reply_to.caption or ""
+        quoted = quoted.strip()
+        if not quoted:
+            return None
+        # Truncate very long quoted messages
+        if len(quoted) > 500:
+            quoted = quoted[:500] + "…"
+        return quoted
+
     async def _on_text(self, update, context) -> None:
         """Handle regular text messages."""
         if not self._check_user(update.effective_user.id):
@@ -392,6 +410,11 @@ class TelegramChannel(Channel):
         # message id to keep separate conversation threads.
         if update.effective_chat.type == "private":
             topic_id = None
+            # Include the quoted message so the agent knows what the user
+            # is referring to (e.g. replying to a cron-sent reminder).
+            quoted = self._extract_reply_context(update)
+            if quoted:
+                text = f'[Replying to message: "{quoted}"]\n\n{text}'
         else:
             reply_to = update.message.reply_to_message
             if reply_to:

@@ -15,11 +15,17 @@ def _get_tavily_client() -> TavilyClient:
 
 
 @tool("web_search", parse_docstring=True)
-def web_search_tool(query: str) -> str:
-    """Search the web.
+def web_search_tool(
+    query: str,
+    topic: str = "general",
+    days: int = None,
+) -> str:
+    """Search the web. Use topic='news' and days=1 for current news searches.
 
     Args:
         query: The query to search for.
+        topic: Search topic — 'general', 'news', or 'finance'. Use 'news' for current events.
+        days: Limit results to the last N days (e.g. 1 for today's news, 7 for past week).
     """
     config = get_app_config().get_tool_config("web_search")
     max_results = 5
@@ -27,7 +33,12 @@ def web_search_tool(query: str) -> str:
         max_results = config.model_extra.get("max_results")
 
     client = _get_tavily_client()
-    res = client.search(query, max_results=max_results)
+    search_kwargs = {"max_results": max_results}
+    if topic in ("news", "finance"):
+        search_kwargs["topic"] = topic
+    if days is not None:
+        search_kwargs["days"] = days
+    res = client.search(query, **search_kwargs)
     normalized_results = [
         {
             "title": result["title"],

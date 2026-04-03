@@ -1,6 +1,10 @@
 """Configuration for memory mechanism."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+MemoryStorageType = Literal["json", "postgres"]
 
 
 class MemoryConfig(BaseModel):
@@ -10,10 +14,25 @@ class MemoryConfig(BaseModel):
         default=True,
         description="Whether to enable memory mechanism",
     )
+    type: MemoryStorageType = Field(
+        default="json",
+        description=(
+            "Storage backend type. "
+            "'json' stores memory in a local JSON file (default, backward compatible). "
+            "'postgres' stores memory in PostgreSQL as JSONB."
+        ),
+    )
+    connection_string: str | None = Field(
+        default=None,
+        description=(
+            "Connection string for postgres backend. "
+            "If not provided and type is 'postgres', falls back to checkpointer.connection_string."
+        ),
+    )
     storage_path: str = Field(
         default="",
         description=(
-            "Path to store memory data. "
+            "Path to store memory data (json backend only). "
             "If empty, defaults to `{base_dir}/memory.json` (see Paths.memory_file). "
             "Absolute paths are used as-is. "
             "Relative paths are resolved against `Paths.base_dir` "

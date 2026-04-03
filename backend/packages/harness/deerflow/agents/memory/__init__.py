@@ -1,7 +1,7 @@
 """Memory module for DeerFlow.
 
 This module provides a global memory mechanism that:
-- Stores user context and conversation history in memory.json
+- Stores user context and conversation history (JSON file or Postgres)
 - Uses LLM to summarize and extract facts from conversations
 - Injects relevant memory into system prompts for personalized responses
 """
@@ -17,6 +17,13 @@ from deerflow.agents.memory.queue import (
     MemoryUpdateQueue,
     get_memory_queue,
     reset_memory_queue,
+)
+from deerflow.agents.memory.storage import (
+    JsonFileStorage,
+    MemoryStorage,
+    PostgresStorage,
+    get_memory_storage,
+    reset_memory_storage,
 )
 from deerflow.agents.memory.updater import (
     MemoryUpdater,
@@ -36,6 +43,12 @@ __all__ = [
     "MemoryUpdateQueue",
     "get_memory_queue",
     "reset_memory_queue",
+    # Storage
+    "MemoryStorage",
+    "JsonFileStorage",
+    "PostgresStorage",
+    "get_memory_storage",
+    "reset_memory_storage",
     # Updater
     "MemoryUpdater",
     "get_memory_data",
