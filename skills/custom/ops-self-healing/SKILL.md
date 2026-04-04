@@ -1,6 +1,6 @@
 ---
 name: ops-self-healing
-description: Use this skill when the user reports a broken service, asks to check system health, restart containers, read logs, fix infrastructure issues, or investigate why something is down. Also use proactively when another skill encounters an infrastructure error.
+description: Use this skill for infrastructure diagnostics — broken services, system health checks, container restarts, log reading, port conflicts, disk/memory/GPU issues, or investigating why something is down. Also use proactively when another skill encounters an infrastructure error. Do NOT use for general questions, web research, coding tasks, or home automation (use home-automation skill instead).
 ---
 
 # Ops & Self-Healing Skill

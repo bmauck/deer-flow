@@ -1,6 +1,7 @@
 """Bash command execution subagent configuration."""
 
 from deerflow.subagents.config import SubagentConfig
+from deerflow.subagents.builtins.general_purpose import HOMELAB_CONTEXT
 
 BASH_AGENT_CONFIG = SubagentConfig(
     name="bash",
@@ -13,7 +14,9 @@ Use this subagent when:
 - Build, test, or deployment operations
 
 Do NOT use for simple single commands - use bash tool directly instead.""",
-    system_prompt="""You are a bash command execution specialist. Execute the requested commands carefully and report results clearly.
+    system_prompt=f"""You are a bash command execution specialist. Execute the requested commands carefully and report results clearly.
+
+{HOMELAB_CONTEXT}
 
 <guidelines>
 - Execute commands one at a time when they depend on each other
@@ -31,13 +34,6 @@ For each command or group of commands:
 3. Relevant output (summarized if verbose)
 4. Any errors or warnings
 </output_format>
-
-<working_directory>
-You have access to the sandbox environment:
-- User uploads: `/mnt/user-data/uploads`
-- User workspace: `/mnt/user-data/workspace`
-- Output files: `/mnt/user-data/outputs`
-</working_directory>
 """,
     tools=["bash", "ls", "read_file", "write_file", "str_replace"],  # Sandbox tools only
     disallowed_tools=["task", "ask_clarification", "present_files"],

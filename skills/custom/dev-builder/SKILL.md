@@ -1,6 +1,6 @@
 ---
 name: dev-builder
-description: Use this skill when the user asks to build, create, deploy, or develop a new service, app, tool, bot, script, or feature. Also use when asked to modify, update, or add features to existing services. This is the primary skill for software development tasks.
+description: Use this skill when the user asks to build, create, deploy, or develop a new service, app, tool, bot, script, or feature. Also use when asked to modify, update, or add features to existing services. This is the primary skill for software development tasks. Do NOT use for checking service health, reading logs, restarting containers, or infrastructure diagnostics — use ops-self-healing instead. Do NOT use for smart home or Home Assistant tasks — use home-automation instead.
 ---
 
 # Dev Builder Skill

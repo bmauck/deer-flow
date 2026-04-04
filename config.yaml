@@ -1,0 +1,192 @@
+config_version: 3
+log_level: info
+
+token_usage:
+  enabled: true
+
+models:
+  # Claude Haiku — lead agent (Gemma 4 parked until ROCm stability improves)
+  - name: claude-haiku
+    display_name: Claude Haiku 4.5 (API)
+    use: langchain_anthropic:ChatAnthropic
+    model: claude-haiku-4-5-20251001
+    api_key: $ANTHROPIC_API_KEY
+    max_tokens: 4096
+    supports_vision: true
+
+  # Sub-task model — local Mistral 7B
+  - name: mistral-7b
+    display_name: Mistral 7B (Local)
+    use: langchain_ollama:ChatOllama
+    model: mistral:7b
+    base_url: http://host.docker.internal:11434
+    num_ctx: 8192
+    supports_vision: false
+    supports_thinking: false
+    fallback_to: claude-haiku
+
+  # Agentic tasks — local Qwen 2.5 14B (best local tool-calling model)
+  - name: qwen-14b
+    display_name: Qwen 2.5 14B (Local)
+    use: langchain_ollama:ChatOllama
+    model: qwen2.5:14b
+    base_url: http://host.docker.internal:11434
+    num_ctx: 8192
+    supports_vision: false
+    supports_thinking: false
+    fallback_to: claude-haiku
+
+  # Coding sub-tasks — local Qwen Coder 7B
+  - name: qwen-coder-7b
+    display_name: Qwen 2.5 Coder 7B (Local)
+    use: langchain_ollama:ChatOllama
+    model: qwen2.5-coder:7b
+    base_url: http://host.docker.internal:11434
+    num_ctx: 8192
+    supports_vision: false
+    supports_thinking: false
+    fallback_to: claude-haiku
+
+  # Vision model for OCR / image understanding
+  - name: llava-13b
+    display_name: LLaVA 13B Vision (Local)
+    use: langchain_ollama:ChatOllama
+    model: llava:13b
+    base_url: http://host.docker.internal:11434
+    supports_vision: true
+    supports_thinking: false
+    fallback_to: claude-haiku
+
+  # Claude fallback for complex reasoning
+  - name: claude-sonnet
+    display_name: Claude Sonnet 4.6 (API)
+    use: langchain_anthropic:ChatAnthropic
+    model: claude-sonnet-4-6-20250514
+    api_key: $ANTHROPIC_API_KEY
+    max_tokens: 8192
+    supports_vision: true
+
+  # DeepSeek for deep reasoning tasks
+  - name: deepseek-r1-70b
+    display_name: DeepSeek R1 70B (Local)
+    use: langchain_ollama:ChatOllama
+    model: deepseek-r1:70b
+    base_url: http://host.docker.internal:11434
+    supports_vision: false
+    supports_thinking: true
+    fallback_to: claude-sonnet
+
+subagents:
+  timeout_seconds: 600
+  model_name: mistral-7b
+  agents:
+    general-purpose:
+      timeout_seconds: 600
+      model_name: qwen-14b
+    browser:
+      timeout_seconds: 120
+      model_name: claude-haiku
+    ops:
+      timeout_seconds: 300
+      model_name: claude-haiku
+
+tool_groups:
+  - name: web
+  - name: file:read
+  - name: file:write
+  - name: bash
+
+tools:
+  - name: web_search
+    group: web
+    use: deerflow.community.tavily.tools:web_search_tool
+    max_results: 5
+
+  - name: web_fetch
+    group: web
+    use: deerflow.community.jina_ai.tools:web_fetch_tool
+    timeout: 10
+
+  - name: image_search
+    group: web
+    use: deerflow.community.image_search.tools:image_search_tool
+    max_results: 5
+
+  - name: ls
+    group: file:read
+    use: deerflow.sandbox.tools:ls_tool
+
+  - name: read_file
+    group: file:read
+    use: deerflow.sandbox.tools:read_file_tool
+
+  - name: write_file
+    group: file:write
+    use: deerflow.sandbox.tools:write_file_tool
+
+  - name: str_replace
+    group: file:write
+    use: deerflow.sandbox.tools:str_replace_tool
+
+  - name: bash
+    group: bash
+    use: deerflow.sandbox.tools:bash_tool
+
+tool_search:
+  enabled: false
+
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvider
+
+skills:
+  container_path: /mnt/skills
+
+title:
+  enabled: true
+  max_words: 6
+  max_chars: 60
+  model_name: mistral-7b
+
+summarization:
+  enabled: true
+  model_name: mistral-7b
+  trigger:
+    - type: tokens
+      value: 30000
+  keep:
+    type: messages
+    value: 10
+  trim_tokens_to_summarize: 30000
+  summary_prompt: null
+
+memory:
+  enabled: true
+  type: postgres
+  # connection_string: omitted — reuses checkpointer.connection_string automatically
+  storage_path: memory.json  # kept as fallback if type is switched back to json
+  debounce_seconds: 120
+  model_name: mistral-7b
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+
+checkpointer:
+  type: postgres
+  connection_string: postgresql://homelab:mkFerDnJF4fEq3eFu6UlWW8Fif9SNUh@homelab-postgres:5432/deerflow
+
+channels:
+  langgraph_url: http://langgraph:2024
+  gateway_url: http://gateway:8001
+
+  telegram:
+    enabled: true
+    bot_token: $TELEGRAM_BOT_TOKEN
+    allowed_users: [8685094817]
+    session:
+      assistant_id: lead_agent
+      config:
+        recursion_limit: 200
+      context:
+        thinking_enabled: false
+        subagent_enabled: true
