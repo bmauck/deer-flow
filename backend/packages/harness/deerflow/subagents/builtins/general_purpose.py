@@ -58,7 +58,7 @@ When you complete the task, provide:
 5. Citations: Use `[citation:Title](URL)` format for external sources
 </output_format>
 """,
-    tools=None,  # Inherit all tools from parent
+    tools=["web_search", "web_fetch", "image_search", "read_file", "write_file", "str_replace", "bash", "ls"],
     disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     model="inherit",
     max_turns=50,

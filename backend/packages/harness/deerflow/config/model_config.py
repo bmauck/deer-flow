@@ -39,3 +39,7 @@ class ModelConfig(BaseModel):
         default_factory=lambda: None,
         description="Model name to fall back to when this model is unavailable (circuit breaker).",
     )
+    context_window: int | None = Field(
+        default=None,
+        description="Context window size in tokens. When set and below the slim-mode threshold, the lead agent uses a minimal system prompt with on-demand instruction loading.",
+    )

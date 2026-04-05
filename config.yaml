@@ -5,7 +5,7 @@ token_usage:
   enabled: true
 
 models:
-  # Claude Haiku — lead agent (Gemma 4 parked until ROCm stability improves)
+  # Claude Haiku — orchestrator / lead agent (reliable tool use, cheap per-call)
   - name: claude-haiku
     display_name: Claude Haiku 4.5 (API)
     use: langchain_anthropic:ChatAnthropic
@@ -13,6 +13,18 @@ models:
     api_key: $ANTHROPIC_API_KEY
     max_tokens: 4096
     supports_vision: true
+
+  # Gemma 4 31B — subagent workhorse (free, local llama.cpp, ROCm gfx1151)
+  - name: gemma-4
+    display_name: Gemma 4 31B (Local)
+    use: langchain_openai:ChatOpenAI
+    model: gemma-4-31b-it
+    base_url: http://host.docker.internal:8085/v1
+    api_key: sk-no-key-required
+    max_tokens: 4096
+    context_window: 32768
+    supports_vision: true
+    fallback_to: claude-haiku
 
   # Sub-task model — local Mistral 7B
   - name: mistral-7b
@@ -78,17 +90,20 @@ models:
 
 subagents:
   timeout_seconds: 600
-  model_name: mistral-7b
+  model_name: gemma-4
   agents:
     general-purpose:
       timeout_seconds: 600
-      model_name: qwen-14b
+      model_name: gemma-4
     browser:
       timeout_seconds: 120
       model_name: claude-haiku
     ops:
       timeout_seconds: 300
-      model_name: claude-haiku
+      model_name: gemma-4
+    coding:
+      timeout_seconds: 600
+      model_name: gemma-4
 
 tool_groups:
   - name: web

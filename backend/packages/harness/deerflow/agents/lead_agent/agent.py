@@ -336,11 +336,25 @@ def make_lead_agent(config: RunnableConfig):
             state_schema=ThreadState,
         )
 
-    # Default lead agent (unchanged behavior)
+    # Detect slim mode for limited-context models
+    context_window = model_config.context_window if model_config else None
+
+    tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled)
+
+    # Add load_instructions tool when slim mode is active
+    from deerflow.agents.lead_agent.prompt import is_slim_mode
+
+    if is_slim_mode(context_window):
+        from deerflow.tools.builtins.instruction_loader import load_instructions
+
+        tools.append(load_instructions)
+        logger.info("Slim mode active (context_window=%d): load_instructions tool added", context_window)
+
+    # Default lead agent
     return create_agent(
         model=create_chat_model(name=model_name, thinking_enabled=thinking_enabled, reasoning_effort=reasoning_effort),
-        tools=get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled),
+        tools=tools,
         middleware=_build_middlewares(config, model_name=model_name, agent_name=agent_name),
-        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name),
+        system_prompt=apply_prompt_template(subagent_enabled=subagent_enabled, max_concurrent_subagents=max_concurrent_subagents, agent_name=agent_name, context_window=context_window),
         state_schema=ThreadState,
     )

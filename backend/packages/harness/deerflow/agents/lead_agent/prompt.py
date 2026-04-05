@@ -15,26 +15,34 @@ def _build_subagent_section(max_concurrent: int) -> str:
     """
     n = max_concurrent
     return f"""<subagent_system>
-You have access to `task()` for launching subagents that run in parallel. Max {n} per turn.
+You have access to `task()` for launching subagents that run on a free local model. Max {n} per turn.
 
-**Default: Execute directly.** Use your tools (web_search, create_outline_doc, bash, etc.) yourself for most requests. This is faster and more reliable.
+**Default: DELEGATE.** You are an orchestrator. Your job is to plan and route, not to do heavy work yourself. Every tool call you make costs money. Subagents are free.
 
-**Only use subagents when ALL of these are true:**
-- The task has 2+ truly independent sub-tasks that benefit from parallel execution
-- Each sub-task is substantial enough to justify the overhead (not just a single tool call)
-- The sub-tasks don't depend on each other's results
+**Delegate to subagents when:**
+- Research tasks (web search + synthesis, finding information, comparing options)
+- Writing tasks (drafts, summaries, reports, analysis)
+- Coding tasks (writing code, debugging, reviewing)
+- Multi-step tasks that require several tool calls
+- Any task that requires processing or generating substantial text
 
-**Examples where subagents help:** "Compare 3 competing technologies", "Research a topic from multiple angles simultaneously"
-**Examples to execute directly:** "Set up a news digest", "Create a document", "Search for X and summarize", "Run tests", any sequential workflow
+**Handle yourself ONLY when:**
+- The answer is a single sentence you already know
+- A single quick tool call (e.g., checking calendar, one bash command)
+- Browser interaction (browser tools only work when YOU call them directly)
+- Clarification questions back to the user
 
-**Browser tools (use directly, NOT via subagent):** You have browser_browser_navigate, browser_browser_get_content, browser_browser_get_elements, browser_browser_click, and browser_browser_type tools available. Use these DIRECTLY for tasks that require interacting with live websites — checking real-time availability, filling out forms, or reading JavaScript-heavy pages.
-**IMPORTANT:** Do NOT delegate browser tasks to subagents — browser tools only work when YOU call them directly. For multiple sites, check them sequentially yourself.
-**Examples:** "Check OpenTable for Saturday dinner" → navigate to URL, read content. "Fill out this form" → navigate, get elements, type/click.
+**IMPORTANT: When delegating, give the subagent a complete prompt.** Include all context it needs — the subagent has no memory of this conversation. Tell it exactly what to do, what tools to use, and what format to return results in.
 
-**Available subagent types:** general-purpose, bash, browser, ops
+**Available subagent types:** general-purpose, bash, coding, ops
 
-**When to use `ops`:** Infrastructure diagnostics, service health checks, reading container logs, checking system resources, restarting services. The ops subagent knows the full service inventory and can diagnose/fix autonomously.
-**Examples:** "Check if all services are healthy" → ops, "Why is Outline down?" → ops, "Check disk space and memory" → ops
+**When to use each:**
+- `general-purpose`: Research, summaries, drafts, analysis, web search tasks
+- `coding`: Writing code, debugging, implementing features, code review
+- `bash`: Shell commands, system tasks, file operations
+- `ops`: Infrastructure diagnostics, service health, container logs, restarts
+
+**Browser tools (use directly, NOT via subagent):** browser_browser_navigate, browser_browser_get_content, browser_browser_get_elements, browser_browser_click, browser_browser_type. These only work when YOU call them.
 
 **Usage:** `task(description="...", prompt="...", subagent_type="general-purpose")`
 - Subagents run asynchronously and return results when done
@@ -185,17 +193,20 @@ Your <memory> section contains facts, preferences, and context you've learned ab
 </memory_usage>
 
 <persistence>
-**You are a personal assistant. SOLVE problems — never delegate back to the user.**
-When the user asks you to DO something, exhaust every tool at your disposal before even considering saying "you'll need to do this yourself." That phrase should almost never appear in your responses.
+**You are an orchestrator. SOLVE problems — never punt back to the user.**
+When the user asks you to DO something, never say "you'll need to do this yourself."
 
-**Escalation chain — always follow this order:**
-1. Try the most direct approach (browser tools for websites, API calls, etc.)
-2. If that fails, try the next best tool (e.g., can't book online → send email via Gmail on user's behalf)
-3. If that fails, try the next (e.g., can't email → search for phone number, provide it with a specific script to say)
-4. Only after ALL approaches are exhausted, explain what you tried and what the user needs to do
+**Your primary tool is delegation.** For any task that requires research, generation, or multiple tool calls, delegate to a subagent via `task()`. Subagents are free (local model). Your own API calls cost money. Only use your own tools directly for single quick lookups or browser interaction.
+
+**Escalation chain:**
+1. Delegate to the appropriate subagent (general-purpose, coding, ops, bash)
+2. If the subagent fails, try a different subagent type or approach
+3. For browser-only tasks, use browser tools directly (they don't work via subagent)
+4. If browser fails, send email via Gmail yourself
+5. Only after ALL approaches are exhausted, explain what you tried
 
 **For bookings and reservations:**
-- Use `browser_check_availability(urls=[...])` to check multiple booking pages in ONE call
+- Use browser tools DIRECTLY (not via subagent) for interactive web tasks
 - To complete a booking: use browser_browser_navigate/click/type to fill forms with the user's info from memory (name, email, phone)
 - If online booking is blocked: SEND an email to the restaurant/venue via Gmail yourself — don't tell the user to email
 - Use the user's personal details from memory to fill booking forms and emails
@@ -219,11 +230,12 @@ When the user asks you to DO something, exhaust every tool at your disposal befo
 """
 
 
-def _get_memory_context(agent_name: str | None = None) -> str:
+def _get_memory_context(agent_name: str | None = None, max_tokens: int | None = None) -> str:
     """Get memory context for injection into system prompt.
 
     Args:
         agent_name: If provided, loads per-agent memory. If None, loads global memory.
+        max_tokens: Override for memory token budget. If None, uses config default.
 
     Returns:
         Formatted memory context string wrapped in XML tags, or empty string if disabled.
@@ -236,8 +248,9 @@ def _get_memory_context(agent_name: str | None = None) -> str:
         if not config.enabled or not config.injection_enabled:
             return ""
 
+        effective_max = max_tokens if max_tokens is not None else config.max_injection_tokens
         memory_data = get_memory_data(agent_name)
-        memory_content = format_memory_for_injection(memory_data, max_tokens=config.max_injection_tokens)
+        memory_content = format_memory_for_injection(memory_data, max_tokens=effective_max)
 
         if not memory_content.strip():
             return ""
@@ -328,48 +341,220 @@ def get_deferred_tools_prompt_section() -> str:
     return f"<available-deferred-tools>\n{names}\n</available-deferred-tools>"
 
 
-def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None) -> str:
-    # Get memory context
-    memory_context = _get_memory_context(agent_name)
+SLIM_MODE_THRESHOLD = 16384  # Models with context_window <= this get slim prompt
 
-    # Include subagent section only if enabled (from runtime parameter)
-    n = max_concurrent_subagents
-    subagent_section = _build_subagent_section(n) if subagent_enabled else ""
 
-    # Add subagent reminder to critical_reminders if enabled
-    subagent_reminder = (
-        "- **Orchestrator Mode**: You are a task orchestrator - decompose complex tasks into parallel sub-tasks. "
-        f"**HARD LIMIT: max {n} `task` calls per response.** "
-        f"If >{n} sub-tasks, split into sequential batches of ≤{n}. Synthesize after ALL batches complete.\n"
-        if subagent_enabled
-        else ""
-    )
+SLIM_SYSTEM_PROMPT_TEMPLATE = """
+<role>
+You are {agent_name}, an open-source super agent.
+</role>
 
-    # Add subagent thinking guidance if enabled
-    subagent_thinking = (
-        "- **DECOMPOSITION CHECK: Can this task be broken into 2+ parallel sub-tasks? If YES, COUNT them. "
-        f"If count > {n}, you MUST plan batches of ≤{n} and only launch the FIRST batch now. "
-        f"NEVER launch more than {n} `task` calls in one response.**\n"
-        if subagent_enabled
-        else ""
-    )
+{soul}
+{memory_context}
 
-    # Get skills section
+<thinking_style>
+- Think concisely about the user's request BEFORE acting
+- If genuinely ambiguous, use ask_clarification; otherwise just proceed
+- After thinking, you MUST provide your actual response to the user
+</thinking_style>
+
+{skills_section}
+
+{deferred_tools_section}
+
+<response_style>
+- Clear and Concise: Avoid over-formatting unless requested
+- Natural Tone: Use paragraphs and prose, not bullet points by default
+- Action-Oriented: Focus on delivering results, not explaining processes
+</response_style>
+
+<available-instructions>
+You have instruction packs for specialized tasks. Call `load_instructions("name")` BEFORE starting the relevant task. You can load multiple at once: `load_instructions("name1,name2")`.
+
+{instruction_index}
+</available-instructions>
+
+<critical_reminders>
+- Load instructions BEFORE specialized tasks (e.g. citations before research, subagents before decomposition)
+- Check memory before asking the user for information
+- Language Consistency: Keep using the same language as user's
+- Always Respond: Thinking is internal. Always provide a visible response.
+</critical_reminders>
+"""
+
+
+def is_slim_mode(context_window: int | None) -> bool:
+    """Return True if the model's context window requires a slim system prompt."""
+    if context_window is None:
+        return False
+    return context_window <= SLIM_MODE_THRESHOLD
+
+
+def _build_instruction_index(packs: list) -> str:
+    """Build a compact index of available instruction packs for the slim prompt."""
+    return "\n".join(f'- "{pack.name}": {pack.description}' for pack in packs)
+
+
+def build_instruction_packs(
+    subagent_enabled: bool = False,
+    max_concurrent_subagents: int = 3,
+) -> list:
+    """Build the set of deferred instruction packs for slim-mode prompts."""
+    from deerflow.tools.builtins.instruction_loader import InstructionPack
+
+    packs = []
+
+    packs.append(InstructionPack(
+        name="citations",
+        description="How to format inline citations and Sources sections after web search",
+        content=(
+            "**CRITICAL: Always include citations when using web search results**\n"
+            "- Format: Use Markdown link `[citation:TITLE](URL)` immediately after the claim\n"
+            "- Placement: Inline citations right after the sentence they support\n"
+            "- Sources Section: Collect all citations in a 'Sources' section at the end\n"
+            "- Sources format: `[Title](URL) - Description` (standard markdown links, NOT citation prefix)\n"
+            "- WORKFLOW: web_search → extract {title, url} → write with inline citations → add Sources section\n"
+            "- NEVER write research content without citations when sources are available"
+        ),
+    ))
+
+    packs.append(InstructionPack(
+        name="clarification",
+        description="When and how to use ask_clarification for ambiguous requests",
+        content=(
+            "Only use ask_clarification for genuinely blocking ambiguity.\n"
+            "DO clarify: destructive actions without clear target, 2+ equally likely interpretations, truly missing critical info.\n"
+            "DO NOT clarify: common tasks with obvious interpretation, when you can state a reasonable assumption, "
+            "when user already answered a clarification.\n"
+            "Usage: ask_clarification(question=..., clarification_type='missing_info', context=..., options=[...])"
+        ),
+    ))
+
+    packs.append(InstructionPack(
+        name="persistence",
+        description="Escalation chain for solving problems without delegating back to user",
+        content=(
+            "You are a personal assistant. SOLVE problems -- never delegate back to the user.\n"
+            "Escalation chain:\n"
+            "1. Try the most direct approach (browser tools, API calls, etc.)\n"
+            "2. If that fails, try the next best tool (e.g., can't book online -> send email via Gmail)\n"
+            "3. If that fails, try the next (e.g., can't email -> search for phone number)\n"
+            "4. Only after ALL approaches are exhausted, explain what you tried and what the user needs to do\n"
+            "For bookings: use browser tools DIRECTLY (not via subagent). If blocked, send email via Gmail."
+        ),
+    ))
+
+    packs.append(InstructionPack(
+        name="working_directory",
+        description="File paths for uploads, workspace, and outputs in the sandbox",
+        content=(
+            "- User uploads: /mnt/user-data/uploads (auto-listed in <uploaded_files>)\n"
+            "- Workspace: /mnt/user-data/workspace (temporary files)\n"
+            "- Outputs: /mnt/user-data/outputs (final deliverables go here, use present_file)\n"
+            "- Use read_file to read uploaded files. PDF/PPT/Excel/Word have .md conversions available."
+        ),
+    ))
+
+    packs.append(InstructionPack(
+        name="memory_usage",
+        description="Rules for checking memory before asking the user for information",
+        content=(
+            "CRITICAL: Check your memory BEFORE asking the user for information.\n"
+            "Your <memory> section contains facts, preferences, and context about the user.\n"
+            "- Before asking 'what is X?', check if X is already in memory\n"
+            "- Before asking for a list or reference, check memory first, then Outline docs\n"
+            "- Only ask the user after confirming info is not already available to you"
+        ),
+    ))
+
+    if subagent_enabled:
+        n = max_concurrent_subagents
+        packs.append(InstructionPack(
+            name="subagents",
+            description=f"How to use task() for parallel subagent delegation (max {n}/turn)",
+            content=_build_subagent_section(n),
+        ))
+
+    packs.append(InstructionPack(
+        name="browser",
+        description="How to use browser tools for live website interaction",
+        content=(
+            "You have browser_browser_navigate, browser_browser_get_content, browser_browser_get_elements, "
+            "browser_browser_click, and browser_browser_type tools.\n"
+            "Use these DIRECTLY for tasks requiring live website interaction.\n"
+            "IMPORTANT: Do NOT delegate browser tasks to subagents -- browser tools only work when YOU call them directly.\n"
+            "Do NOT rely on web_search or web_fetch for live availability -- they can't render JavaScript."
+        ),
+    ))
+
+    return packs
+
+
+def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagents: int = 3, *, agent_name: str | None = None, available_skills: set[str] | None = None, context_window: int | None = None) -> str:
+    slim = is_slim_mode(context_window)
+
+    # Get skills section and deferred tools section (shared by both paths)
     skills_section = get_skills_prompt_section(available_skills)
-
-    # Get deferred tools section (tool_search)
     deferred_tools_section = get_deferred_tools_prompt_section()
 
-    # Format the prompt with dynamic skills and memory
-    prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        agent_name=agent_name or "DeerFlow 2.0",
-        soul=get_agent_soul(agent_name),
-        skills_section=skills_section,
-        deferred_tools_section=deferred_tools_section,
-        memory_context=memory_context,
-        subagent_section=subagent_section,
-        subagent_reminder=subagent_reminder,
-        subagent_thinking=subagent_thinking,
-    )
+    if slim:
+        # Slim mode: minimal system prompt + deferred instruction packs
+        from deerflow.tools.builtins.instruction_loader import (
+            InstructionRegistry,
+            set_instruction_registry,
+        )
+
+        packs = build_instruction_packs(
+            subagent_enabled=subagent_enabled,
+            max_concurrent_subagents=max_concurrent_subagents,
+        )
+        registry = InstructionRegistry()
+        for pack in packs:
+            registry.register(pack)
+        set_instruction_registry(registry)
+
+        instruction_index = _build_instruction_index(packs)
+        memory_context = _get_memory_context(agent_name, max_tokens=500)
+
+        prompt = SLIM_SYSTEM_PROMPT_TEMPLATE.format(
+            agent_name=agent_name or "DeerFlow 2.0",
+            soul=get_agent_soul(agent_name) or "",
+            skills_section=skills_section,
+            deferred_tools_section=deferred_tools_section,
+            memory_context=memory_context,
+            instruction_index=instruction_index,
+        )
+    else:
+        # Full mode: all sections inline (existing behavior)
+        memory_context = _get_memory_context(agent_name)
+        n = max_concurrent_subagents
+        subagent_section = _build_subagent_section(n) if subagent_enabled else ""
+
+        subagent_reminder = (
+            "- **Orchestrator Mode**: You are a task orchestrator - decompose complex tasks into parallel sub-tasks. "
+            f"**HARD LIMIT: max {n} `task` calls per response.** "
+            f"If >{n} sub-tasks, split into sequential batches of ≤{n}. Synthesize after ALL batches complete.\n"
+            if subagent_enabled
+            else ""
+        )
+
+        subagent_thinking = (
+            "- **DECOMPOSITION CHECK: Can this task be broken into 2+ parallel sub-tasks? If YES, COUNT them. "
+            f"If count > {n}, you MUST plan batches of <={n} and only launch the FIRST batch now. "
+            f"NEVER launch more than {n} `task` calls in one response.**\n"
+            if subagent_enabled
+            else ""
+        )
+
+        prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            agent_name=agent_name or "DeerFlow 2.0",
+            soul=get_agent_soul(agent_name) or "",
+            skills_section=skills_section,
+            deferred_tools_section=deferred_tools_section,
+            memory_context=memory_context,
+            subagent_section=subagent_section,
+            subagent_reminder=subagent_reminder,
+            subagent_thinking=subagent_thinking,
+        )
 
     return prompt + f"\n<current_date>{datetime.now().strftime('%Y-%m-%d, %A')}</current_date>"

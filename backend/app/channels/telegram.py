@@ -94,6 +94,26 @@ class TelegramChannel(Channel):
         self._application = None
         logger.info("Telegram channel stopped")
 
+    _MAX_TG_LEN = 4096  # Telegram message character limit
+
+    @staticmethod
+    def _chunk_text(text: str, limit: int = 4096) -> list[str]:
+        """Split text into chunks that fit within Telegram's message limit."""
+        if len(text) <= limit:
+            return [text]
+        chunks: list[str] = []
+        while text:
+            if len(text) <= limit:
+                chunks.append(text)
+                break
+            # Try to split at last newline within limit
+            cut = text.rfind("\n", 0, limit)
+            if cut <= 0:
+                cut = limit
+            chunks.append(text[:cut])
+            text = text[cut:].lstrip("\n")
+        return chunks
+
     async def send(self, msg: OutboundMessage, *, _max_retries: int = 3) -> None:
         if not self._application:
             return
@@ -104,35 +124,32 @@ class TelegramChannel(Channel):
             logger.error("Invalid Telegram chat_id: %s", msg.chat_id)
             return
 
-        kwargs: dict[str, Any] = {"chat_id": chat_id, "text": msg.text}
-
-        # Disabled: reply threading (sends as standalone messages)
-        # reply_to = self._last_bot_message.get(msg.chat_id)
-        # if reply_to:
-        #     kwargs["reply_to_message_id"] = reply_to
-
         bot = self._application.bot
-        last_exc: Exception | None = None
-        for attempt in range(_max_retries):
-            try:
-                sent = await bot.send_message(**kwargs)
-                self._last_bot_message[msg.chat_id] = sent.message_id
-                return
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _max_retries - 1:
-                    delay = 2**attempt  # 1s, 2s
-                    logger.warning(
-                        "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
-                        attempt + 1,
-                        _max_retries,
-                        delay,
-                        exc,
-                    )
-                    await asyncio.sleep(delay)
+        chunks = self._chunk_text(msg.text, self._MAX_TG_LEN)
 
-        logger.error("[Telegram] send failed after %d attempts: %s", _max_retries, last_exc)
-        raise last_exc  # type: ignore[misc]
+        for chunk in chunks:
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            last_exc: Exception | None = None
+            for attempt in range(_max_retries):
+                try:
+                    sent = await bot.send_message(**kwargs)
+                    self._last_bot_message[msg.chat_id] = sent.message_id
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < _max_retries - 1:
+                        delay = 2**attempt  # 1s, 2s
+                        logger.warning(
+                            "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
+                            attempt + 1,
+                            _max_retries,
+                            delay,
+                            exc,
+                        )
+                        await asyncio.sleep(delay)
+            else:
+                logger.error("[Telegram] send failed after %d attempts: %s", _max_retries, last_exc)
+                raise last_exc  # type: ignore[misc]
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         if not self._application:
