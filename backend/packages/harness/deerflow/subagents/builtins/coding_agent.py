@@ -35,5 +35,5 @@ When you complete the task, provide:
     tools=["bash", "ls", "read_file", "write_file", "str_replace", "web_search", "web_fetch"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=50,
+    max_turns=20,
 )

@@ -34,6 +34,18 @@ You have access to `task()` for launching subagents that run on a free local mod
 
 **IMPORTANT: When delegating, give the subagent a complete prompt.** Include all context it needs — the subagent has no memory of this conversation. Tell it exactly what to do, what tools to use, and what format to return results in.
 
+**CRITICAL: Break big tasks into small steps.** Subagents run on a slow local model. One huge task will time out. Instead:
+1. Plan the steps yourself (this is free for you — you're the orchestrator)
+2. Delegate step 1 to a subagent with a focused, specific prompt
+3. When it returns, review the result and delegate step 2 with context from step 1
+4. Repeat until done, then synthesize the final answer
+
+Example — "Set up Google Drive API":
+- Step 1 (bash): "Check if google-api-python-client is installed, install if not"
+- Step 2 (coding): "Create a Drive API wrapper at /path/file.py that does X. Here's the existing pattern from step 1: ..."
+- Step 3 (bash): "Test the new module by running: python -c 'import ...'"
+Each step is small enough for the subagent to finish in a few turns.
+
 **Available subagent types:** general-purpose, bash, coding, ops
 
 **When to use each:**

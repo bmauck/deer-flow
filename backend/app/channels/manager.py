@@ -20,7 +20,7 @@ DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_GATEWAY_URL = "http://localhost:8001"
 DEFAULT_ASSISTANT_ID = "lead_agent"
 # Maximum time (seconds) to wait for a single LangGraph run before giving up.
-RUN_TIMEOUT_SECONDS = 600
+RUN_TIMEOUT_SECONDS = 1800  # 30 min — generous for slow local models; loop detection + max_turns are the real guards
 
 DEFAULT_RUN_CONFIG: dict[str, Any] = {"recursion_limit": 100}
 DEFAULT_RUN_CONTEXT: dict[str, Any] = {
@@ -35,6 +35,17 @@ CHANNEL_CAPABILITIES = {
     "slack": {"supports_streaming": False},
     "telegram": {"supports_streaming": False},
 }
+
+
+def _is_thread_not_found(exc: BaseException) -> bool:
+    """Return True if the exception indicates a 404 (thread not found) from LangGraph."""
+    try:
+        import httpx
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            return True
+    except ImportError:
+        pass
+    return "404" in str(exc) and ("not found" in str(exc).lower() or "Not Found" in str(exc))
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -481,6 +492,52 @@ class ChannelManager:
 
     # -- chat handling -----------------------------------------------------
 
+    async def _recover_stale_thread(self, client, msg: InboundMessage, old_thread_id: str) -> str:
+        """Invalidate a stale thread mapping and create a fresh thread."""
+        logger.warning(
+            "[Manager] thread %s not found on LangGraph Server (stale after redeploy?), creating new thread for chat_id=%s",
+            old_thread_id,
+            msg.chat_id,
+        )
+        return await self._create_thread(client, msg)
+
+    async def _invoke_run(
+        self, client, msg: InboundMessage, thread_id: str,
+        assistant_id: str, run_config: dict, run_context: dict,
+    ) -> dict | list | None:
+        """Call runs.wait with automatic 404 recovery and timeout handling."""
+        for attempt in range(2):
+            try:
+                logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
+                return await asyncio.wait_for(
+                    client.runs.wait(
+                        thread_id,
+                        assistant_id,
+                        input={"messages": [{"role": "human", "content": msg.text}]},
+                        config=run_config,
+                        context=run_context,
+                        multitask_strategy="interrupt",
+                    ),
+                    timeout=RUN_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.error("[Manager] runs.wait timed out after %ds for thread_id=%s", RUN_TIMEOUT_SECONDS, thread_id)
+                await self._cancel_active_runs(client, thread_id)
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel_name=msg.channel_name,
+                    chat_id=msg.chat_id,
+                    thread_id=thread_id,
+                    text="\u23f1 Request timed out after %d seconds. Please try again." % RUN_TIMEOUT_SECONDS,
+                ))
+                return None
+            except Exception as exc:
+                if attempt == 0 and _is_thread_not_found(exc):
+                    thread_id = await self._recover_stale_thread(client, msg, thread_id)
+                    run_context = {**run_context, "thread_id": thread_id}
+                    continue
+                raise
+        return None  # unreachable, satisfies type checker
+
     async def _create_thread(self, client, msg: InboundMessage) -> str:
         """Create a new thread on the LangGraph Server and store the mapping."""
         thread = await client.threads.create()
@@ -558,39 +615,29 @@ class ChannelManager:
         if extra_context:
             run_context.update(extra_context)
         if self._channel_supports_streaming(msg.channel_name):
-            await self._handle_streaming_chat(
-                client,
-                msg,
-                thread_id,
-                assistant_id,
-                run_config,
-                run_context,
-            )
-            return
-
-        logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
-        try:
-            result = await asyncio.wait_for(
-                client.runs.wait(
+            try:
+                await self._handle_streaming_chat(
+                    client,
+                    msg,
                     thread_id,
                     assistant_id,
-                    input={"messages": [{"role": "human", "content": msg.text}]},
-                    config=run_config,
-                    context=run_context,
-                    multitask_strategy="interrupt",
-                ),
-                timeout=RUN_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            logger.error("[Manager] runs.wait timed out after %ds for thread_id=%s", RUN_TIMEOUT_SECONDS, thread_id)
-            await self._cancel_active_runs(client, thread_id)
-            await self.bus.publish_outbound(OutboundMessage(
-                channel_name=msg.channel_name,
-                chat_id=msg.chat_id,
-                thread_id=thread_id,
-                text="⏱ Request timed out after %d seconds. Please try again." % RUN_TIMEOUT_SECONDS,
-            ))
+                    run_config,
+                    run_context,
+                )
+            except Exception as exc:
+                if _is_thread_not_found(exc):
+                    thread_id = await self._recover_stale_thread(client, msg, thread_id)
+                    run_context["thread_id"] = thread_id
+                    await self._handle_streaming_chat(
+                        client, msg, thread_id, assistant_id, run_config, run_context,
+                    )
+                else:
+                    raise
             return
+
+        result = await self._invoke_run(client, msg, thread_id, assistant_id, run_config, run_context)
+        if result is None:
+            return  # timeout already handled inside _invoke_run
 
         response_text = _extract_response_text(result)
         artifacts = _extract_artifacts(result)

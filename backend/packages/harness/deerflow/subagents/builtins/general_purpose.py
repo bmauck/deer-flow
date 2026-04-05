@@ -61,5 +61,5 @@ When you complete the task, provide:
     tools=["web_search", "web_fetch", "image_search", "read_file", "write_file", "str_replace", "bash", "ls"],
     disallowed_tools=["task", "ask_clarification", "present_files"],  # Prevent nesting and clarification
     model="inherit",
-    max_turns=50,
+    max_turns=25,
 )
