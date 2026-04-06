@@ -93,18 +93,47 @@ class ChannelStore:
         topic_id: str | None = None,
         user_id: str = "",
     ) -> None:
-        """Create or update the mapping for an IM conversation/topic."""
+        """Create or update the mapping for an IM conversation/topic.
+
+        When an existing thread_id is being replaced, the old one is archived
+        into a ``previous_threads`` list so it can be recalled later.
+        """
         with self._lock:
             key = self._key(channel_name, chat_id, topic_id)
             now = time.time()
             existing = self._data.get(key)
+
+            # Archive the outgoing thread_id (if different from the new one).
+            if existing and existing["thread_id"] != thread_id:
+                prev: list[dict[str, Any]] = existing.get("previous_threads", [])
+                prev.append({
+                    "thread_id": existing["thread_id"],
+                    "created_at": existing["created_at"],
+                    "archived_at": now,
+                })
+                # Keep only the last 10 threads to avoid unbounded growth.
+                prev = prev[-10:]
+            else:
+                prev = (existing or {}).get("previous_threads", [])
+
             self._data[key] = {
                 "thread_id": thread_id,
                 "user_id": user_id,
                 "created_at": existing["created_at"] if existing else now,
                 "updated_at": now,
+                "previous_threads": prev,
             }
             self._save()
+
+    def get_previous_threads(
+        self, channel_name: str, chat_id: str, topic_id: str | None = None, limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Return the most recent archived thread_ids (newest first)."""
+        entry = self._data.get(self._key(channel_name, chat_id, topic_id))
+        if not entry:
+            return []
+        prev = entry.get("previous_threads", [])
+        return list(reversed(prev[-limit:]))
 
     def remove(self, channel_name: str, chat_id: str, topic_id: str | None = None) -> bool:
         """Remove a mapping.

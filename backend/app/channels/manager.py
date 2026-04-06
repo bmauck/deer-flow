@@ -20,7 +20,7 @@ DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_GATEWAY_URL = "http://localhost:8001"
 DEFAULT_ASSISTANT_ID = "lead_agent"
 # Maximum time (seconds) to wait for a single LangGraph run before giving up.
-RUN_TIMEOUT_SECONDS = 1800  # 30 min — generous for slow local models; loop detection + max_turns are the real guards
+RUN_TIMEOUT_SECONDS = 600  # 10 min — micro-swarm tasks are faster; loop detection + max_turns are the real guards
 
 DEFAULT_RUN_CONFIG: dict[str, Any] = {"recursion_limit": 100}
 DEFAULT_RUN_CONTEXT: dict[str, Any] = {
@@ -35,6 +35,34 @@ CHANNEL_CAPABILITIES = {
     "slack": {"supports_streaming": False},
     "telegram": {"supports_streaming": False},
 }
+
+
+async def _log_request_outcome(
+    channel: str,
+    chat_id: str,
+    request_text: str | None,
+    outcome: str,
+    duration: float | None = None,
+    error_type: str | None = None,
+    error_detail: str | None = None,
+) -> None:
+    """Log a request outcome to Postgres for self-improvement analysis."""
+    try:
+        from deerflow.config.checkpointer_config import get_checkpointer_config
+
+        config = get_checkpointer_config()
+        if not config or not config.connection_string:
+            return
+        import psycopg
+
+        with psycopg.connect(config.connection_string, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO request_outcomes (channel, chat_id, request_text, outcome, duration_seconds, error_type, error_detail) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (channel, chat_id, (request_text or "")[:500], outcome, duration, error_type, (error_detail or "")[:1000]),
+            )
+    except Exception as e:
+        logger.debug("Failed to log request outcome: %s", e)
 
 
 def _is_thread_not_found(exc: BaseException) -> bool:
@@ -392,7 +420,11 @@ class ChannelManager:
             self._default_session.get("context"),
             channel_layer.get("context"),
             user_layer.get("context"),
-            {"thread_id": thread_id},
+            {
+                "thread_id": thread_id,
+                "channel_name": msg.channel_name,
+                "chat_id": msg.chat_id,
+            },
         )
 
         return assistant_id, run_config, run_context
@@ -462,13 +494,17 @@ class ChannelManager:
             logger.error("[Manager] unhandled error in message task: %s", exc, exc_info=exc)
 
     async def _handle_message(self, msg: InboundMessage) -> None:
+        t0 = time.monotonic()
         async with self._semaphore:
             try:
                 if msg.msg_type == InboundMessageType.COMMAND:
                     await self._handle_command(msg)
                 else:
                     await self._handle_chat(msg)
+                duration = time.monotonic() - t0
+                await _log_request_outcome(msg.channel_name, msg.chat_id, msg.text, "success", duration)
             except Exception as exc:
+                duration = time.monotonic() - t0
                 exc_str = str(exc)
                 if "GraphRecursionError" in exc_str or "Recursion limit" in exc_str:
                     logger.error(
@@ -482,13 +518,27 @@ class ChannelManager:
                         "The agent ran out of steps while working on your request. "
                         "Try breaking your request into smaller parts, or start a new conversation with /new.",
                     )
+                    await _log_request_outcome(msg.channel_name, msg.chat_id, msg.text, "recursion_limit", duration, "GraphRecursionError")
+                elif "timed out" in exc_str.lower() or "TimeoutError" in exc_str:
+                    logger.error(
+                        "Timeout handling message from %s (chat=%s): %s",
+                        msg.channel_name,
+                        msg.chat_id,
+                        exc_str,
+                    )
+                    await self._send_error(
+                        msg,
+                        "The request timed out. The agent may be overloaded. Try again in a moment.",
+                    )
+                    await _log_request_outcome(msg.channel_name, msg.chat_id, msg.text, "timeout", duration, "TimeoutError")
                 else:
                     logger.exception(
                         "Error handling message from %s (chat=%s)",
                         msg.channel_name,
                         msg.chat_id,
                     )
-                    await self._send_error(msg, "An internal error occurred. Please try again.")
+                    await self._send_error(msg, f"Internal error ({type(exc).__name__}). Please try again.")
+                    await _log_request_outcome(msg.channel_name, msg.chat_id, msg.text, "error", duration, type(exc).__name__, exc_str[:500])
 
     # -- chat handling -----------------------------------------------------
 
@@ -527,7 +577,7 @@ class ChannelManager:
                     channel_name=msg.channel_name,
                     chat_id=msg.chat_id,
                     thread_id=thread_id,
-                    text="\u23f1 Request timed out after %d seconds. Please try again." % RUN_TIMEOUT_SECONDS,
+                    text="\u23f1 Request timed out after %d minutes. A subagent task may have gotten stuck. Try sending your request again." % (RUN_TIMEOUT_SECONDS // 60),
                 ))
                 return None
             except Exception as exc:
