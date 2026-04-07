@@ -87,6 +87,6 @@ Do NOT use for general-purpose coding, web research, or browser tasks.""",
     tools=["bash", "ls", "read_file", "write_file", "str_replace"],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=30,
+    max_turns=12,
     timeout_seconds=300,
 )

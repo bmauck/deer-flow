@@ -189,7 +189,23 @@ fi
 
 echo ""
 
-# ── Step 2: Build and start ───────────────────────────────────────────────────
+# ── Step 1.5: Wait for external Postgres ──────────���──────────────────────────
+
+echo "Waiting for Postgres..."
+for i in $(seq 1 30); do
+    if docker exec homelab-postgres pg_isready -U homelab >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Postgres is ready${NC}"
+        break
+    fi
+    if [ "$i" = "30" ]; then
+        echo -e "${RED}✗ Postgres not ready after 30s — proceeding anyway${NC}"
+    fi
+    sleep 1
+done
+
+echo ""
+
+# ── Step 2: Build and start ─��─────────────────────────────────��───────────────
 
 echo "Building images and starting containers..."
 echo ""

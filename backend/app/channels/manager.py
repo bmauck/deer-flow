@@ -20,7 +20,7 @@ DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_GATEWAY_URL = "http://localhost:8001"
 DEFAULT_ASSISTANT_ID = "lead_agent"
 # Maximum time (seconds) to wait for a single LangGraph run before giving up.
-RUN_TIMEOUT_SECONDS = 600  # 10 min — micro-swarm tasks are faster; loop detection + max_turns are the real guards
+RUN_TIMEOUT_SECONDS = 600  # 10 min — micro-swarm subagents timeout at 300s each; 2 sequential rounds fit comfortably
 
 DEFAULT_RUN_CONFIG: dict[str, Any] = {"recursion_limit": 100}
 DEFAULT_RUN_CONTEXT: dict[str, Any] = {
@@ -506,6 +506,7 @@ class ChannelManager:
             except Exception as exc:
                 duration = time.monotonic() - t0
                 exc_str = str(exc)
+                thread_id = self.store.get_thread_id(msg.channel_name, msg.chat_id, topic_id=msg.topic_id)
                 if "GraphRecursionError" in exc_str or "Recursion limit" in exc_str:
                     logger.error(
                         "Agent hit recursion limit for %s (chat=%s): %s",
@@ -513,6 +514,8 @@ class ChannelManager:
                         msg.chat_id,
                         exc_str,
                     )
+                    if thread_id:
+                        await self._stamp_thread_outcome(thread_id, "Recursion limit exceeded")
                     await self._send_error(
                         msg,
                         "The agent ran out of steps while working on your request. "
@@ -526,6 +529,8 @@ class ChannelManager:
                         msg.chat_id,
                         exc_str,
                     )
+                    if thread_id:
+                        await self._stamp_thread_outcome(thread_id, "Timeout")
                     await self._send_error(
                         msg,
                         "The request timed out. The agent may be overloaded. Try again in a moment.",
@@ -537,8 +542,23 @@ class ChannelManager:
                         msg.channel_name,
                         msg.chat_id,
                     )
+                    if thread_id:
+                        await self._stamp_thread_outcome(thread_id, f"Error: {type(exc).__name__}")
                     await self._send_error(msg, f"Internal error ({type(exc).__name__}). Please try again.")
                     await _log_request_outcome(msg.channel_name, msg.chat_id, msg.text, "error", duration, type(exc).__name__, exc_str[:500])
+
+    # -- failure stamping ---------------------------------------------------
+
+    async def _stamp_thread_outcome(self, thread_id: str, outcome: str) -> None:
+        """Append a marker message to the thread so recall_conversation can show what happened."""
+        try:
+            client = self._get_client()
+            await client.threads.update_state(
+                thread_id,
+                values={"messages": [{"role": "ai", "content": f"[Session ended: {outcome}]"}]},
+            )
+        except Exception as e:
+            logger.debug("Failed to stamp thread %s with outcome: %s", thread_id, e)
 
     # -- chat handling -----------------------------------------------------
 
@@ -573,6 +593,7 @@ class ChannelManager:
             except asyncio.TimeoutError:
                 logger.error("[Manager] runs.wait timed out after %ds for thread_id=%s", RUN_TIMEOUT_SECONDS, thread_id)
                 await self._cancel_active_runs(client, thread_id)
+                await self._stamp_thread_outcome(thread_id, f"Timeout after {RUN_TIMEOUT_SECONDS // 60} minutes")
                 await self.bus.publish_outbound(OutboundMessage(
                     channel_name=msg.channel_name,
                     chat_id=msg.chat_id,

@@ -89,12 +89,15 @@ models:
     fallback_to: claude-sonnet
 
 subagents:
-  timeout_seconds: 600
-  model_name: gemma-4
+  timeout_seconds: 300
+  model_name: mistral-7b
   agents:
     general-purpose:
-      timeout_seconds: 600
-      model_name: gemma-4
+      timeout_seconds: 300
+      model_name: mistral-7b
+    bash:
+      timeout_seconds: 300
+      model_name: mistral-7b
     browser:
       timeout_seconds: 120
       model_name: claude-haiku
@@ -103,7 +106,7 @@ subagents:
       model_name: gemma-4
     coding:
       timeout_seconds: 600
-      model_name: gemma-4
+      model_name: claude-haiku
 
 tool_groups:
   - name: web
@@ -167,11 +170,11 @@ summarization:
   model_name: mistral-7b
   trigger:
     - type: tokens
-      value: 30000
+      value: 20000
   keep:
     type: messages
-    value: 10
-  trim_tokens_to_summarize: 30000
+    value: 6
+  trim_tokens_to_summarize: 20000
   summary_prompt: null
 
 memory:

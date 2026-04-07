@@ -341,6 +341,22 @@ def make_lead_agent(config: RunnableConfig):
 
     tools = get_available_tools(model_name=model_name, groups=agent_config.tool_groups if agent_config else None, subagent_enabled=subagent_enabled)
 
+    # When subagents are enabled, strip heavy tools from the orchestrator.
+    # The orchestrator should ONLY plan and delegate — never call bash, file ops,
+    # or web search directly. Those tools are available to the subagents.
+    # Keep: task, ask_clarification, present_file, view_image, browser tools.
+    if subagent_enabled:
+        ORCHESTRATOR_KEEP = {
+            "task", "ask_clarification", "present_files", "view_image",
+            # Browser tools must stay on orchestrator (subagents can't use them)
+            "browser_browser_navigate", "browser_browser_get_content",
+            "browser_browser_get_elements", "browser_browser_click",
+            "browser_browser_type", "browser_check_availability",
+        }
+        before = len(tools)
+        tools = [t for t in tools if t.name in ORCHESTRATOR_KEEP]
+        logger.info("Orchestrator mode: stripped tools %d → %d (subagents handle the rest)", before, len(tools))
+
     # Add load_instructions tool when slim mode is active
     from deerflow.agents.lead_agent.prompt import is_slim_mode
 

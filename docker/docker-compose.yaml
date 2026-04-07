@@ -31,9 +31,12 @@ services:
     volumes:
       - ./nginx/${NGINX_CONF:-nginx.conf}:/etc/nginx/nginx.conf:ro
     depends_on:
-      - frontend
-      - gateway
-      - langgraph
+      frontend:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+      langgraph:
+        condition: service_healthy
     networks:
       - deer-flow
     restart: unless-stopped
@@ -55,6 +58,12 @@ services:
     networks:
       - deer-flow
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # ── Gateway API ────────────────────────────────────────────────────────────
   gateway:
@@ -108,6 +117,12 @@ services:
       - deer-flow
       - shared-infra
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   # ── LangGraph Server ───────────────────────────────────────────────────────
   # TODO: switch to langchain/langgraph-api (licensed) once a license key is available.
@@ -120,7 +135,7 @@ services:
     container_name: deer-flow-langgraph
     ports:
       - "127.0.0.1:2024:2024"
-    command: sh -c "cd /app/backend && uv run langgraph dev --no-browser --allow-blocking --no-reload --host 0.0.0.0 --port 2024 --n-jobs-per-worker 2"
+    command: sh -c "cd /app/backend && uv run langgraph dev --no-browser --allow-blocking --no-reload --host 0.0.0.0 --port 2024 --n-jobs-per-worker 6"
     volumes:
       - ${DEER_FLOW_CONFIG_PATH}:/app/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH}:/app/extensions_config.json:ro

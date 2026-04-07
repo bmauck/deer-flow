@@ -68,11 +68,11 @@ _background_tasks: dict[str, SubagentResult] = {}
 _background_tasks_lock = threading.Lock()
 
 # Thread pool for background task scheduling and orchestration
-_scheduler_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-scheduler-")
+_scheduler_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="subagent-scheduler-")
 
 # Thread pool for actual subagent execution (with timeout support)
 # Larger pool to avoid blocking when scheduler submits execution tasks
-_execution_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="subagent-exec-")
+_execution_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="subagent-exec-")
 
 
 def _filter_tools(
@@ -95,6 +95,10 @@ def _filter_tools(
     # Apply allowlist if specified
     if allowed is not None:
         allowed_set = set(allowed)
+        available_names = {t.name for t in filtered}
+        missing = allowed_set - available_names
+        if missing:
+            logger.warning("Subagent allowlist has tools not found in available tools: %s", missing)
         filtered = [t for t in filtered if t.name in allowed_set]
 
     # Apply denylist
@@ -229,7 +233,7 @@ class SubagentExecutor:
 
             # Build config with thread_id for sandbox access and recursion limit
             run_config: RunnableConfig = {
-                "recursion_limit": self.config.max_turns,
+                "recursion_limit": self.config.max_turns * 2 + 1,  # LangGraph counts model + tools as separate steps
             }
             context = {}
             if self.thread_id:
@@ -411,6 +415,9 @@ class SubagentExecutor:
         Returns:
             Task ID that can be used to check status later.
         """
+        # Garbage collect stuck tasks before starting new ones
+        reap_stuck_tasks()
+
         # Use provided task_id or generate a new one
         if task_id is None:
             task_id = str(uuid.uuid4())[:8]
@@ -466,7 +473,33 @@ class SubagentExecutor:
         return task_id
 
 
-MAX_CONCURRENT_SUBAGENTS = 3
+MAX_CONCURRENT_SUBAGENTS = 4
+
+# Any task running longer than this is considered stuck and will be reaped
+STUCK_TASK_TIMEOUT_SECONDS = 900  # 15 minutes
+
+
+def reap_stuck_tasks() -> int:
+    """Remove background tasks that have been running for too long.
+
+    Returns the number of tasks reaped.
+    """
+    reaped = 0
+    now = datetime.now()
+    with _background_tasks_lock:
+        stale_ids = []
+        for task_id, result in _background_tasks.items():
+            if result.status in {SubagentStatus.PENDING, SubagentStatus.RUNNING}:
+                started = result.started_at or now
+                if (now - started).total_seconds() > STUCK_TASK_TIMEOUT_SECONDS:
+                    stale_ids.append(task_id)
+        for task_id in stale_ids:
+            _background_tasks[task_id].status = SubagentStatus.TIMED_OUT
+            _background_tasks[task_id].error = "Reaped by stuck task reaper"
+            _background_tasks[task_id].completed_at = now
+            reaped += 1
+            logger.warning("Reaped stuck background task: %s (running >%ds)", task_id, STUCK_TASK_TIMEOUT_SECONDS)
+    return reaped
 
 
 def get_background_task_result(task_id: str) -> SubagentResult | None:

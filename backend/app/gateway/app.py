@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -186,12 +187,37 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     @app.get("/health", tags=["health"])
     async def health_check() -> dict:
-        """Health check endpoint.
+        """Deep health check — verifies gateway, LangGraph, and Postgres."""
+        import httpx
+        from fastapi.responses import JSONResponse
 
-        Returns:
-            Service health status information.
-        """
-        return {"status": "healthy", "service": "deer-flow-gateway"}
+        checks: dict[str, str] = {"gateway": "healthy"}
+
+        # Check LangGraph
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get("http://langgraph:2024/ok")
+                checks["langgraph"] = "healthy" if r.status_code == 200 else "unhealthy"
+        except Exception:
+            checks["langgraph"] = "unreachable"
+
+        # Check Postgres via TCP connect
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("homelab-postgres", 5432),
+                timeout=3,
+            )
+            writer.close()
+            await writer.wait_closed()
+            checks["postgres"] = "healthy"
+        except Exception:
+            checks["postgres"] = "unreachable"
+
+        all_healthy = all(v == "healthy" for v in checks.values())
+        return JSONResponse(
+            content={"status": "healthy" if all_healthy else "degraded", "checks": checks},
+            status_code=200 if all_healthy else 503,
+        )
 
     return app
 

@@ -32,8 +32,11 @@ When you complete the task, provide:
 4. Any issues or caveats
 </output_format>
 """,
-    tools=["bash", "ls", "read_file", "write_file", "str_replace", "web_search", "web_fetch"],
+    tools=[
+        "bash", "ls", "read_file", "write_file", "str_replace", "web_search", "web_fetch",
+        "host_read_file", "host_write_file", "host_edit_file", "host_list_dir", "host_search_files", "host_grep",
+    ],
     disallowed_tools=["task", "ask_clarification", "present_files"],
     model="inherit",
-    max_turns=20,
+    max_turns=25,
 )

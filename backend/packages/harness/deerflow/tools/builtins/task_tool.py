@@ -23,7 +23,7 @@ def task_tool(
     runtime: ToolRuntime[ContextT, ThreadState],
     description: str,
     prompt: str,
-    subagent_type: Literal["general-purpose", "bash", "browser"],
+    subagent_type: Literal["general-purpose", "bash", "coding", "ops", "browser"],
     tool_call_id: Annotated[str, InjectedToolCallId],
     max_turns: int | None = None,
 ) -> str:
@@ -35,14 +35,16 @@ def task_tool(
     - Execute commands or operations in isolated contexts
 
     Available subagent types:
-    - **general-purpose**: A capable agent for complex, multi-step tasks that require
-      both exploration and action. Use when the task requires complex reasoning,
-      multiple dependent steps, or would benefit from isolated context.
-    - **bash**: Command execution specialist for running bash commands. Use for
-      git operations, build processes, or when command output would be verbose.
-    - **browser**: Browser automation specialist for interacting with live websites.
-      Use for checking real-time availability (reservations, appointments), filling
-      forms, or navigating JavaScript-heavy pages that web_fetch cannot render.
+    - **general-purpose**: Research and analysis — web search, reading docs, summaries.
+      Read-only; no write tools. Use for information gathering.
+    - **bash**: Shell commands, file operations, git, docker, system tasks.
+      Fastest subagent (fewest tools). Use for any command execution.
+    - **coding**: Writing/modifying code, debugging, code review. Has file write
+      tools and host file access.
+    - **ops**: Infrastructure diagnostics, service health, container management.
+      Knows all homelab services and diagnostic workflows.
+    - **browser**: Browser automation for interacting with live websites.
+      Use for reservations, form filling, JS-heavy pages.
 
     When to use this tool:
     - Complex tasks requiring multiple steps or tools
@@ -64,7 +66,7 @@ def task_tool(
     # Get subagent configuration
     config = get_subagent_config(subagent_type)
     if config is None:
-        return f"Error: Unknown subagent type '{subagent_type}'. Available: general-purpose, bash, browser"
+        return f"Error: Unknown subagent type '{subagent_type}'. Available: general-purpose, bash, coding, ops, browser"
 
     # Build config overrides
     overrides: dict = {}
